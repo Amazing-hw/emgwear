@@ -1,0 +1,187 @@
+import sys
+import ast
+import importlib.util
+import json
+import uuid
+from pathlib import Path
+from types import SimpleNamespace
+
+import joblib
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import s03_extract_feature_pool as s03
+import s08_run_pipeline as s08
+
+
+class FakeBooster:
+    def save_config(self):
+        return "{}"
+
+
+class FakeModel:
+    n_estimators = 3
+
+    def get_booster(self):
+        return FakeBooster()
+
+
+def test_pipeline_commands_include_npz_cache_postprocess_path():
+    args = SimpleNamespace(
+        dataset_dir="dataset",
+        artifact_dir="artifacts",
+        n_workers=2,
+        max_features=15,
+        window_sec=3,
+        stride_sec=1,
+    )
+
+    commands = s08.build_pipeline_commands(args)
+
+    assert "--export_window_cache" in commands["s06_cache_valid"]
+    assert "--split valid" in commands["s06_cache_valid"]
+    assert "s07_postprocess_optimize" in commands["s07_post"]
+    assert "--cache_root window_outputs" in commands["s07_post"]
+    assert "--split valid" in commands["s07_post"]
+
+
+def test_pipeline_commands_enable_model_search_by_default():
+    args = SimpleNamespace(
+        dataset_dir="dataset",
+        artifact_dir="artifacts",
+        n_workers=2,
+        max_features=15,
+        window_sec=3,
+        stride_sec=1,
+    )
+
+    cmd = s08.build_pipeline_commands(args)["s05"]
+
+    assert "--model_search" in cmd
+    assert "--max_features 15" in cmd
+    assert "--model_search_strategy staged_group_cv" in cmd
+    assert "--model_search_max_candidates 600" in cmd
+    assert "--model_search_stage2_top_k 80" in cmd
+    assert "--model_search_cv_folds 3" in cmd
+    assert "--model_search_cv_repeats 2" in cmd
+    assert "--model_search_random_state 42" in cmd
+
+
+def test_default_pipeline_steps_skip_postprocess_search_before_final_eval():
+    steps = s08.default_pipeline_steps()
+    step_keys = [key for key, _, _ in steps]
+    # default-enabled steps only
+    default_keys = [key for key, _, enabled in steps if enabled]
+
+    assert "s06_opt" not in default_keys
+    assert "s06_cache_valid" not in default_keys
+    assert "s07_post" not in default_keys
+    assert step_keys.index("s05") < step_keys.index("s06_eval")
+
+
+def test_deploy_feature_extractor_is_standalone_and_matches_training_ppg_features():
+    feature_order = ["PPG_mean", "PPG_std", "PPG_p95", "PPG_diff_std"]
+    formula_map = s08._build_feature_code_map()
+    feat_block = "\n".join(f'    f["{name}"] = {formula_map[name]}' for name in feature_order)
+    script = s08._build_extractor_script_template(
+        len(feature_order),
+        json.dumps(feature_order),
+        json.dumps({name: 0.0 for name in feature_order}),
+        json.dumps({}),  # CLIP_BOUNDS (empty for this test)
+        feat_block,
+    )
+    out_dir = Path.cwd() / "test_outputs" / "deploy_feature_extractor"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    script_path = out_dir / f"deploy_feature_extractor_{uuid.uuid4().hex}.py"
+    try:
+        script_path.write_text(script, encoding="utf-8")
+
+        parsed = ast.parse(script)
+        imported_modules = []
+        for node in parsed.body:
+            if isinstance(node, ast.Import):
+                imported_modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported_modules.append(node.module or "")
+        assert "s03_extract_feature_pool" not in imported_modules
+
+        spec = importlib.util.spec_from_file_location("deploy_feature_extractor_tmp", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        rng = np.random.default_rng(7)
+        ppg_6ch = rng.normal(50000, 4000, size=(300, 6))
+        emg = rng.normal(0, 1, size=(3000, 2))
+        acc = rng.normal(0, 1, size=(300, 3))
+
+        deployed = module.extract_features(ppg_6ch, emg, acc)
+        trained = s03.extract_feature_pool_from_window(
+            s03.build_3ch_ppg(ppg_6ch),
+            emg,
+            acc,
+        )
+
+        expected = [float(trained[name]) for name in feature_order]
+        np.testing.assert_allclose(deployed, expected, rtol=1e-9, atol=1e-9)
+    finally:
+        if script_path.exists():
+            script_path.unlink()
+        try:
+            out_dir.rmdir()
+            out_dir.parent.rmdir()
+        except OSError:
+            pass
+
+
+def test_deploy_cookbook_uses_current_postprocess_and_clip_bounds():
+    out_dir = Path.cwd() / "test_outputs" / f"deploy_cookbook_{uuid.uuid4().hex}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        (out_dir / "stage1_threshold.json").write_text(
+            json.dumps({
+                "deploy_stage1_threshold": {
+                    "dc_threshold": 1.0,
+                    "ac_dc_threshold": 0.2,
+                }
+            }),
+            encoding="utf-8",
+        )
+        postprocess = {
+            "alpha": 0.25,
+            "T_on": 0.55,
+            "T_off": 0.2,
+            "K_on": 1,
+            "K_off": 1,
+            "cooldown_sec": 0.0,
+            "median_k": 1,
+        }
+        (out_dir / "final_model_config.json").write_text(
+            json.dumps({"postprocess": postprocess}),
+            encoding="utf-8",
+        )
+        bundle = {
+            "feature_names": ["PPG_mean"],
+            "fill_values": {"PPG_mean": 10.0},
+            "clip_bounds": {"PPG_mean": [1.0, 20.0]},
+            "threshold": 0.35,
+            "model": FakeModel(),
+        }
+        joblib.dump(bundle, out_dir / "model_bundle.pkl")
+
+        s08.export_deploy_cookbook(str(out_dir))
+
+        cookbook = json.loads((out_dir / "deploy_cookbook.json").read_text(encoding="utf-8"))
+        deploy_xgb = json.loads((out_dir / "deploy_xgboost.json").read_text(encoding="utf-8"))
+
+        assert cookbook["D_stage3_postprocess"]["params"] == postprocess
+        assert deploy_xgb["fill_values"] == bundle["fill_values"]
+        assert deploy_xgb["clip_bounds"] == bundle["clip_bounds"]
+    finally:
+        for p in out_dir.glob("*"):
+            p.unlink()
+        try:
+            out_dir.rmdir()
+            out_dir.parent.rmdir()
+        except OSError:
+            pass
