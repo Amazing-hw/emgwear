@@ -1075,7 +1075,7 @@ def main(args=None):
     parser.add_argument("--model_search_random_state", type=int, default=42)
     parser.add_argument("--model_search_accuracy_tolerance", type=float, default=0.0)
     parser.add_argument("--model_search_stage1_top_k", type=int, default=4)
-    parser.add_argument("--model_search_n_estimators", type=str, default="20,25,30,35,40,45,50,55,60,70,80")
+    parser.add_argument("--model_search_n_estimators", type=str, default="20,25,30,35,40,45,50,55,60")
     parser.add_argument("--model_search_max_depth", type=str, default="2,3,4")
     parser.add_argument("--model_search_learning_rate", type=str, default="0.025,0.03,0.04,0.05,0.06,0.08,0.10")
     parser.add_argument("--model_search_min_child_weight", type=str, default="10,15,20,25,30,40,50")

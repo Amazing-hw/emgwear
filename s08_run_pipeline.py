@@ -74,7 +74,7 @@ def build_pipeline_commands(args):
             f' --model_search_random_state {_arg(args, "model_search_random_state", 42)}'
             f' --model_search_accuracy_tolerance {_arg(args, "model_search_accuracy_tolerance", 0.0)}'
             f' --model_search_stage1_top_k {_arg(args, "model_search_stage1_top_k", 4)}'
-            f' --model_search_n_estimators "{_arg(args, "model_search_n_estimators", "20,25,30,35,40,45,50,55,60,70,80")}"'
+            f' --model_search_n_estimators "{_arg(args, "model_search_n_estimators", "20,25,30,35,40,45,50,55,60")}"'
             f' --model_search_max_depth "{_arg(args, "model_search_max_depth", "2,3,4")}"'
             f' --model_search_learning_rate "{_arg(args, "model_search_learning_rate", "0.025,0.03,0.04,0.05,0.06,0.08,0.10")}"'
             f' --model_search_min_child_weight "{_arg(args, "model_search_min_child_weight", "10,15,20,25,30,40,50")}"'
@@ -1255,7 +1255,7 @@ def main():
     p.add_argument('--model_search_random_state', type=int, default=42)
     p.add_argument('--model_search_accuracy_tolerance', type=float, default=0.0)
     p.add_argument('--model_search_stage1_top_k', type=int, default=4)
-    p.add_argument('--model_search_n_estimators', default='20,25,30,35,40,45,50,55,60,70,80')
+    p.add_argument('--model_search_n_estimators', default='20,25,30,35,40,45,50,55,60')
     p.add_argument('--model_search_max_depth', default='2,3,4')
     p.add_argument('--model_search_learning_rate', default='0.025,0.03,0.04,0.05,0.06,0.08,0.10')
     p.add_argument('--model_search_min_child_weight', default='10,15,20,25,30,40,50')
@@ -1365,10 +1365,56 @@ def main():
             print(f'[OK] {display_name}  [{timedelta(seconds=int(dt))}]')
             continue
 
-        ok = _run(display_name, command)
-        if not ok:
-            print(f'\n[FAIL] 流水线中断于: {display_name}')
-            sys.exit(1)
+        # 特征数量搜参：对每个 k 独立运行 s05
+        if key == 's05' and args.model_search_feature_counts:
+            _counts = [int(x.strip()) for x in args.model_search_feature_counts.split(',') if x.strip()]
+            _counts = sorted(set(_counts))
+            if _counts:
+                print(f'\n[特征数量搜参] 测试 k = {_counts}')
+                _best_k, _best_acc = None, -1.0
+                for _k in _counts:
+                    _cmd_k = command.replace(
+                        f'--max_features {args.max_features}',
+                        f'--max_features {_k}')
+                    print(f'\n  --- k={_k} ---')
+                    _ok = _run(f'{display_name} (k={_k})', _cmd_k)
+                    if not _ok:
+                        print(f'\n[FAIL] s05 k={_k} 失败')
+                        continue
+                    # 读取该 k 的 model_search_records 评估效果
+                    _rec_path = os.path.join(args.artifact_dir, 'model_search_records.json')
+                    if os.path.exists(_rec_path):
+                        try:
+                            with open(_rec_path, 'r', encoding='utf-8') as _rf:
+                                _records = json.load(_rf)
+                            if _records:
+                                _best_rec = _records[0]
+                                _acc = _best_rec.get('mean_cv_accuracy', 0.0)
+                                if _acc > _best_acc:
+                                    _best_k, _best_acc = _k, _acc
+                        except Exception:
+                            pass
+                if _best_k and _best_k != _counts[-1]:
+                    print(f'\n[特征数量搜参] 最优 k={_best_k} (acc={_best_acc:.4f})，重新运行 s05')
+                    _cmd_best = command.replace(
+                        f'--max_features {args.max_features}',
+                        f'--max_features {_best_k}')
+                    ok = _run(f'{display_name} (final k={_best_k})', _cmd_best)
+                    if not ok:
+                        print(f'\n[FAIL] 流水线中断于: {display_name}')
+                        sys.exit(1)
+                else:
+                    ok = True  # 最后一个 k 已经是最优或唯一
+            else:
+                ok = _run(display_name, command)
+                if not ok:
+                    print(f'\n[FAIL] 流水线中断于: {display_name}')
+                    sys.exit(1)
+        else:
+            ok = _run(display_name, command)
+            if not ok:
+                print(f'\n[FAIL] 流水线中断于: {display_name}')
+                sys.exit(1)
 
         if key == stop_after:
             print(f'\n[STOP] 已运行到 {stop_after}，按 --stop_after 提前结束')
