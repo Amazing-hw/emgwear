@@ -270,6 +270,34 @@ def parse_model_search_values(raw, cast, name):
     return values
 
 
+def parse_feature_count_candidates(raw, max_features=None, ranked_count=None):
+    """Parse feature-count search candidates.
+
+    Empty input means "use max_features once". Explicit counts are sorted,
+    de-duplicated, and capped to the available ranked feature count.
+    """
+    if str(raw or "").strip():
+        counts = parse_model_search_values(raw, int, "model_search_feature_counts")
+    else:
+        if max_features is None:
+            return []
+        counts = [int(max_features)]
+
+    limit = int(ranked_count) if ranked_count is not None else None
+    out = []
+    for count in counts:
+        count = int(count)
+        if count <= 0:
+            raise ValueError("model_search_feature_counts must be positive integers")
+        if limit is not None and count > limit:
+            continue
+        if count not in out:
+            out.append(count)
+    if not out:
+        raise ValueError("model_search_feature_counts has no usable value within available features")
+    return sorted(out)
+
+
 def build_default_xgb_params(scale_pos_weight=1.0):
     params = dict(DEFAULT_XGB_PARAMS)
     params["scale_pos_weight"] = float(scale_pos_weight)
@@ -666,9 +694,33 @@ def select_best_group_cv_record(records, accuracy_tolerance=0.0):
     return best
 
 
+def select_best_feature_count_result(results, accuracy_tolerance=0.0):
+    """Select the best feature-count run using the same deployment-oriented keys."""
+    eligible = [
+        r for r in results
+        if r.get("selection_record", {}).get("eligible", False)
+    ]
+    if not eligible:
+        return None
+
+    def sort_key(result):
+        record = result.get("selection_record", {})
+        return (
+            -float(record.get("mean_cv_accuracy", 0.0)),
+            float(record.get("std_cv_accuracy", 0.0)),
+            float(record.get("mean_cv_fp_rate", 0.0)),
+            int(record.get("final_total_nodes", 0)),
+            int(result.get("feature_count", record.get("feature_count", 0))),
+        )
+
+    return sorted(eligible, key=sort_key)[0]
+
+
 def model_search_record_to_csv_row(record):
     row = {
         "rank_input_order": record.get("rank_input_order"),
+        "feature_count": record.get("feature_count"),
+        "chosen_feature_count": record.get("chosen_feature_count"),
         "stage": record.get("stage"),
         "eligible": record.get("eligible"),
         "mean_cv_accuracy": record.get("mean_cv_accuracy"),
@@ -940,6 +992,182 @@ def search_xgb_hyperparameters(args, X_train, y_train, X_valid, y_valid,
     }, records
 
 
+def select_features_for_count(fs, ranked, feature_count):
+    if ranked:
+        k = min(int(feature_count), len(ranked))
+        return [r["feature"] for r in ranked[:k]]
+    selected = list(fs["selected_features"])
+    k = min(int(feature_count), len(selected))
+    return selected[:k]
+
+
+def _feature_count_selection_record(result):
+    summary = result.get("model_search_summary", {})
+    best = summary.get("best") or {}
+    if "mean_cv_accuracy" in best:
+        record = dict(best)
+    elif "metrics" in best:
+        metrics = best.get("metrics", {})
+        record = {
+            "eligible": bool(best.get("eligible", False)),
+            "mean_cv_accuracy": float(metrics.get("accuracy", 0.0)),
+            "std_cv_accuracy": 0.0,
+            "mean_cv_fp_rate": float(best.get("fp_rate", 0.0)),
+            "mean_cv_precision": float(metrics.get("precision", 0.0)),
+            "mean_cv_recall": float(metrics.get("recall", 0.0)),
+            "final_total_nodes": int(best.get("total_nodes", result.get("total_nodes", 0))),
+            "params": best.get("params", {}),
+        }
+    else:
+        metrics = result.get("valid_best", {})
+        record = {
+            "eligible": True,
+            "mean_cv_accuracy": float(metrics.get("accuracy", 0.0)),
+            "std_cv_accuracy": 0.0,
+            "mean_cv_fp_rate": _window_fp_rate_from_metrics(metrics),
+            "mean_cv_precision": float(metrics.get("precision", 0.0)),
+            "mean_cv_recall": float(metrics.get("recall", 0.0)),
+            "final_total_nodes": int(result.get("total_nodes", 0)),
+            "params": result.get("model_params", {}),
+        }
+    record["feature_count"] = int(result["feature_count"])
+    return record
+
+
+def summarize_feature_count_search(results, chosen_result, accuracy_tolerance=0.0):
+    enabled = len(results) > 1
+    candidates = []
+    for result in results:
+        record = result["selection_record"]
+        candidates.append({
+            "feature_count": int(result["feature_count"]),
+            "eligible": bool(record.get("eligible", False)),
+            "mean_cv_accuracy": _json_safe_float(record.get("mean_cv_accuracy", 0.0)),
+            "std_cv_accuracy": _json_safe_float(record.get("std_cv_accuracy", 0.0)),
+            "mean_cv_fp_rate": _json_safe_float(record.get("mean_cv_fp_rate", 0.0)),
+            "final_total_nodes": int(record.get("final_total_nodes", 0)),
+        })
+    return {
+        "enabled": enabled,
+        "selection_data": "train_group_cv_only" if enabled else "fixed",
+        "selection_policy": "mean_cv_accuracy_std_fp_nodes_feature_count" if enabled else "fixed_feature_count",
+        "accuracy_tolerance": float(accuracy_tolerance),
+        "candidate_feature_counts": [int(r["feature_count"]) for r in results],
+        "chosen_feature_count": int(chosen_result["feature_count"]),
+        "chosen_reason": "highest_mean_cv_accuracy_lowest_std_fp_nodes",
+        "chosen_record": _json_safe_model_search_record(chosen_result["selection_record"]),
+        "candidates": candidates,
+    }
+
+
+def train_final_model_for_features(args, fs, df_train_raw, df_valid_raw,
+                                   feature_pool_train_path, splits_path,
+                                   selected_features, feature_count):
+    logger.info("training final model with %d selected features", len(selected_features))
+
+    logger.info("应用异常值裁剪 (train 学边界 -> train/valid 同步应用)...")
+    df_train, clip_bounds = clip_outliers(df_train_raw, selected_features, k=1.5,
+                                          return_bounds=True)
+    df_valid = clip_outliers(df_valid_raw, selected_features, k=1.5, bounds=clip_bounds)
+
+    quality_thresholds = learn_quality_thresholds(df_train, QUALITY_FEATURES_DEFAULT)
+    feature_quantiles = compute_feature_quantiles(
+        df_train, selected_features,
+        q_low=args.ood_q_low, q_high=args.ood_q_high
+    )
+    fill_values = prepare_fill_values(df_train, selected_features)
+
+    X_train, y_train, _ = prepare_xy(df_train, selected_features, fill_values=fill_values)
+    X_valid, y_valid, _ = prepare_xy(df_valid, selected_features, fill_values=fill_values)
+    train_groups = df_train["sample_name"].astype(str).values if "sample_name" in df_train.columns else None
+
+    neg_count = int(np.sum(y_train == 0))
+    pos_count = int(np.sum(y_train == 1))
+    n_total = max(neg_count + pos_count, 1)
+    p_train_pos = pos_count / float(n_total)
+
+    scale_pos_weight_strategy = "balanced_1.0"
+    if args.legacy_scale_pos_weight:
+        scale_pos_weight = (neg_count / pos_count) if pos_count > 0 else 1.0
+        scale_pos_weight_strategy = "legacy_neg_over_pos"
+    elif args.target_deploy_ratio is not None:
+        r = float(args.target_deploy_ratio)
+        r = min(max(r, 1e-6), 1 - 1e-6)
+        if 0.0 < p_train_pos < 1.0:
+            scale_pos_weight = (r * (1 - p_train_pos)) / ((1 - r) * p_train_pos)
+        else:
+            scale_pos_weight = 1.0
+        scale_pos_weight_strategy = f"target_deploy_ratio={r}"
+    else:
+        scale_pos_weight = 1.0
+
+    logger.info("样本分布统计:")
+    logger.info("  负样本(target=0): %d", neg_count)
+    logger.info("  正样本(target=1): %d", pos_count)
+    logger.info("  train 正类占比 p_train_pos: %.4f", p_train_pos)
+    logger.info("  scale_pos_weight 策略: %s", scale_pos_weight_strategy)
+    logger.info("  scale_pos_weight: %.4f", scale_pos_weight)
+
+    model_search_summary = {"enabled": False}
+    model_search_records = []
+    if args.model_search:
+        model, model_search_summary, model_search_records = search_xgb_hyperparameters(
+            args, X_train, y_train, X_valid, y_valid,
+            scale_pos_weight=scale_pos_weight,
+            groups=train_groups,
+        )
+        for record in model_search_records:
+            record["feature_count"] = int(feature_count)
+    else:
+        model = train_xgb_with_params(
+            build_default_xgb_params(scale_pos_weight=scale_pos_weight),
+            X_train, y_train,
+        )
+
+    total_nodes = count_xgb_nodes(model)
+    avg_nodes = total_nodes / max(model.n_estimators, 1)
+    logger.info("trained %d trees, total_nodes=%d, avg_nodes/tree=%.1f",
+                model.n_estimators, total_nodes, avg_nodes)
+    if total_nodes > int(args.max_model_nodes):
+        logger.warning("总节点数 %d 超过 %d 上限", total_nodes, int(args.max_model_nodes))
+
+    valid_default = eval_model(model, X_valid, y_valid, threshold=0.5)
+    best_threshold = search_threshold_by_valid(
+        model, X_valid, y_valid,
+        objective=args.threshold_objective,
+        beta=args.threshold_beta,
+        min_precision=args.threshold_min_precision,
+    )
+    valid_best = eval_model(model, X_valid, y_valid, threshold=best_threshold["threshold"])
+    fingerprint = build_fingerprint(args.artifact_dir, feature_pool_train_path, splits_path)
+
+    result = {
+        "feature_count": int(feature_count),
+        "selected_features": selected_features,
+        "clip_bounds": clip_bounds,
+        "quality_thresholds": quality_thresholds,
+        "feature_quantiles": feature_quantiles,
+        "fill_values": fill_values,
+        "model": model,
+        "model_search_summary": model_search_summary,
+        "model_search_records": model_search_records,
+        "total_nodes": int(total_nodes),
+        "avg_nodes": float(avg_nodes),
+        "valid_default": valid_default,
+        "best_threshold": best_threshold,
+        "valid_best": valid_best,
+        "fingerprint": fingerprint,
+        "neg_count": neg_count,
+        "pos_count": pos_count,
+        "p_train_pos": float(p_train_pos),
+        "scale_pos_weight": float(scale_pos_weight),
+        "scale_pos_weight_strategy": scale_pos_weight_strategy,
+        "model_params": model.get_params(),
+    }
+    result["selection_record"] = _feature_count_selection_record(result)
+    return result
+
+
 # =========================================================
 # 质量阈值 / OOD 分位数 / fingerprint
 # =========================================================
@@ -1108,17 +1336,6 @@ def main(args=None):
     with open(selected_features_path, "r", encoding="utf-8") as f:
         fs = json.load(f)
 
-    # 若存在 ranked_features.json，从中取 top-k（支持不同 max_features）；
-    # 否则从 selected_features.json 取。
-    if os.path.exists(ranked_features_path):
-        with open(ranked_features_path, "r", encoding="utf-8") as f:
-            ranked = json.load(f)
-        _k = min(args.max_features, len(ranked))
-        selected_features = [r["feature"] for r in ranked[:_k]]
-        logger.info(f"从 ranked_features.json 取 top {_k} 特征（共 {len(ranked)} 个候选）")
-    else:
-        selected_features = fs["selected_features"]
-
     feature_pool_train_path = os.path.join(args.artifact_dir, "feature_pool_train.csv")
     feature_pool_valid_path = os.path.join(args.artifact_dir, "feature_pool_valid.csv")
     splits_path = os.path.join(args.artifact_dir, "splits.json")
@@ -1126,86 +1343,74 @@ def main(args=None):
     df_train_raw = pd.read_csv(feature_pool_train_path)
     df_valid_raw = pd.read_csv(feature_pool_valid_path)
 
-    # 异常值裁剪：从 train 学边界，应用到 train 与 valid
-    logger.info("应用异常值裁剪 (train 学边界 → train/valid 同步应用)...")
-    df_train, clip_bounds = clip_outliers(df_train_raw, selected_features, k=1.5,
-                                          return_bounds=True)
-    df_valid = clip_outliers(df_valid_raw, selected_features, k=1.5, bounds=clip_bounds)
+    ranked = None
+    if os.path.exists(ranked_features_path):
+        with open(ranked_features_path, "r", encoding="utf-8") as f:
+            ranked = json.load(f)
 
-    # 质量阈值 / OOD 分位数基于裁剪后的 train
-    quality_thresholds = learn_quality_thresholds(df_train, QUALITY_FEATURES_DEFAULT)
-    feature_quantiles = compute_feature_quantiles(
-        df_train, selected_features,
-        q_low=args.ood_q_low, q_high=args.ood_q_high
+    ranked_count = len(ranked) if ranked is not None else len(fs["selected_features"])
+    default_feature_count = args.max_features if args.max_features is not None else ranked_count
+    feature_count_search_enabled = bool(str(args.model_search_feature_counts or "").strip())
+    if feature_count_search_enabled and not args.model_search:
+        raise ValueError("--model_search_feature_counts requires --model_search")
+    if feature_count_search_enabled and args.model_search_strategy != "staged_group_cv":
+        raise ValueError("--model_search_feature_counts requires --model_search_strategy staged_group_cv")
+    feature_counts = parse_feature_count_candidates(
+        args.model_search_feature_counts,
+        max_features=default_feature_count,
+        ranked_count=ranked_count,
     )
+    if not feature_counts:
+        feature_counts = [int(default_feature_count)]
 
-    fill_values = prepare_fill_values(df_train, selected_features)
+    fit_results = []
+    for feature_count in feature_counts:
+        selected_for_count = select_features_for_count(fs, ranked, feature_count)
+        logger.info("feature_count candidate k=%d -> %d selected features",
+                    int(feature_count), len(selected_for_count))
+        fit_results.append(train_final_model_for_features(
+            args, fs, df_train_raw, df_valid_raw,
+            feature_pool_train_path, splits_path,
+            selected_for_count, feature_count,
+        ))
 
-    X_train, y_train, _ = prepare_xy(df_train, selected_features, fill_values=fill_values)
-    X_valid, y_valid, _ = prepare_xy(df_valid, selected_features, fill_values=fill_values)
-    train_groups = df_train["sample_name"].astype(str).values if "sample_name" in df_train.columns else None
+    chosen_result = select_best_feature_count_result(
+        fit_results,
+        accuracy_tolerance=args.model_search_accuracy_tolerance,
+    )
+    if chosen_result is None:
+        raise RuntimeError("feature-count search found no eligible model under max_model_nodes")
 
-    # 样本权重策略
-    neg_count = int(np.sum(y_train == 0))
-    pos_count = int(np.sum(y_train == 1))
-    n_total = max(neg_count + pos_count, 1)
-    p_train_pos = pos_count / float(n_total)
+    feature_count_search_summary = summarize_feature_count_search(
+        fit_results,
+        chosen_result,
+        accuracy_tolerance=args.model_search_accuracy_tolerance,
+    )
+    selected_features = chosen_result["selected_features"]
+    fill_values = chosen_result["fill_values"]
+    clip_bounds = chosen_result["clip_bounds"]
+    quality_thresholds = chosen_result["quality_thresholds"]
+    feature_quantiles = chosen_result["feature_quantiles"]
+    model = chosen_result["model"]
+    best_threshold = chosen_result["best_threshold"]
+    model_search_summary = dict(chosen_result["model_search_summary"])
+    model_search_summary["feature_count_search"] = feature_count_search_summary
+    total_nodes = chosen_result["total_nodes"]
+    avg_nodes = chosen_result["avg_nodes"]
+    valid_default = chosen_result["valid_default"]
+    valid_best = chosen_result["valid_best"]
+    fingerprint = chosen_result["fingerprint"]
+    neg_count = chosen_result["neg_count"]
+    pos_count = chosen_result["pos_count"]
+    p_train_pos = chosen_result["p_train_pos"]
+    scale_pos_weight = chosen_result["scale_pos_weight"]
+    scale_pos_weight_strategy = chosen_result["scale_pos_weight_strategy"]
 
-    scale_pos_weight_strategy = "balanced_1.0"
-    if args.legacy_scale_pos_weight:
-        scale_pos_weight = (neg_count / pos_count) if pos_count > 0 else 1.0
-        scale_pos_weight_strategy = "legacy_neg_over_pos"
-    elif args.target_deploy_ratio is not None:
-        r = float(args.target_deploy_ratio)
-        r = min(max(r, 1e-6), 1 - 1e-6)
-        if 0.0 < p_train_pos < 1.0:
-            scale_pos_weight = (r * (1 - p_train_pos)) / ((1 - r) * p_train_pos)
-        else:
-            scale_pos_weight = 1.0
-        scale_pos_weight_strategy = f"target_deploy_ratio={r}"
-    else:
-        scale_pos_weight = 1.0
-
-    logger.info(f"样本分布统计:")
-    logger.info(f"  负样本(target=0): {neg_count}")
-    logger.info(f"  正样本(target=1): {pos_count}")
-    logger.info(f"  train 正类占比 p_train_pos: {p_train_pos:.4f}")
-    logger.info(f"  scale_pos_weight 策略: {scale_pos_weight_strategy}")
-    logger.info(f"  scale_pos_weight: {scale_pos_weight:.4f}")
-
-    # 部署约束: 端侧总节点数 ≤500。depth=3 满树=7节点，40树×7=280 实际节点。
-    model_search_summary = {"enabled": False}
     model_search_records = []
-    if args.model_search:
-        model, model_search_summary, model_search_records = search_xgb_hyperparameters(
-            args, X_train, y_train, X_valid, y_valid,
-            scale_pos_weight=scale_pos_weight,
-            groups=train_groups,
-        )
-    else:
-        model = train_xgb_with_params(
-            build_default_xgb_params(scale_pos_weight=scale_pos_weight),
-            X_train, y_train,
-        )
-
-    # 打印实际节点数，验证 ≤500
-    total_nodes = count_xgb_nodes(model)
-    avg_nodes = total_nodes / max(model.n_estimators, 1)
-    logger.info(f"trained {model.n_estimators} trees, total_nodes={total_nodes}, "
-                f"avg_nodes/tree={avg_nodes:.1f}")
-    if total_nodes > 500:
-        logger.warning(f"总节点数 {total_nodes} 超过 500 上限，建议减少 n_estimators 或增大 min_child_weight")
-
-    valid_default = eval_model(model, X_valid, y_valid, threshold=0.5)
-
-    best_threshold = search_threshold_by_valid(
-        model, X_valid, y_valid,
-        objective=args.threshold_objective,
-        beta=args.threshold_beta,
-        min_precision=args.threshold_min_precision,
-    )
-
-    valid_best = eval_model(model, X_valid, y_valid, threshold=best_threshold["threshold"])
+    for result in fit_results:
+        for record in result["model_search_records"]:
+            record["chosen_feature_count"] = int(result["feature_count"]) == int(chosen_result["feature_count"])
+            model_search_records.append(record)
 
     print("\nValid 默认阈值 0.5:")
     print(json.dumps(valid_default, indent=2, ensure_ascii=False))
@@ -1219,8 +1424,6 @@ def main(args=None):
     bundle_path = os.path.join(args.artifact_dir, "model_bundle.pkl")
 
     model.save_model(model_path)
-
-    fingerprint = build_fingerprint(args.artifact_dir, feature_pool_train_path, splits_path)
 
     model_bundle = {
         "version": "v2",
@@ -1239,6 +1442,7 @@ def main(args=None):
         "feature_quantiles": feature_quantiles,
         "fingerprint": fingerprint,
         "model_search": model_search_summary,
+        "feature_count_search": feature_count_search_summary,
         "xgboost_complexity": {
             "total_nodes": int(total_nodes),
             "avg_nodes_per_tree": float(avg_nodes),
@@ -1255,7 +1459,7 @@ def main(args=None):
             "n_ppg_channels": 6,
             "n_emg_channels": 2,
             "n_acc_channels": 3,
-            "ppg_mode": "6ch_avg_single_channel",
+            "ppg_mode": "raw6_to_virtual3_chA_basic_features",
             "emg_notch_config": {
                 "notch_freqs_hz": [50.0, 100.0, 150.0, 200.0, 250.0, 300.0],
                 "notch_bw_hz": 0.8,
@@ -1269,6 +1473,7 @@ def main(args=None):
 
     config = {
         "selected_features": selected_features,
+        "selected_feature_count": int(len(selected_features)),
         "fill_values": fill_values,
         "clip_bounds": clip_bounds,
         "quality_thresholds": quality_thresholds,
@@ -1287,6 +1492,7 @@ def main(args=None):
             "threshold_selection_data": "valid_only",
             "test_used": False,
             "feature_selection_data": fs.get("selection_policy", {}).get("selection_data", "unknown"),
+            "feature_count_selection_data": feature_count_search_summary.get("selection_data", "fixed"),
         },
 
         "class_balance": {
@@ -1305,6 +1511,7 @@ def main(args=None):
             "max_model_nodes": int(args.max_model_nodes),
         },
         "model_search": model_search_summary,
+        "feature_count_search": feature_count_search_summary,
         "valid_default_threshold_metrics": valid_default,
         "valid_best_threshold_metrics": valid_best,
         "threshold_search": best_threshold,
@@ -1346,6 +1553,8 @@ def main(args=None):
             for r in safe_records:
                 row = {
                     "rank_input_order": r["rank_input_order"],
+                    "feature_count": r.get("feature_count"),
+                    "chosen_feature_count": r.get("chosen_feature_count"),
                     "eligible": r["eligible"],
                     "score": r["score"],
                     "fp_rate": r["fp_rate"],

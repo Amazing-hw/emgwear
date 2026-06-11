@@ -132,6 +132,7 @@ def test_pipeline_commands_pass_model_search_params_to_s05():
         model_search_reg_alpha="2",
         model_search_subsample="0.8",
         model_search_colsample_bytree="0.7,0.8",
+        model_search_feature_counts="8,12",
     )
 
     cmd = s08.build_pipeline_commands(args)["s05"]
@@ -144,6 +145,7 @@ def test_pipeline_commands_pass_model_search_params_to_s05():
     assert '--model_search_n_estimators "20,30"' in cmd
     assert '--model_search_max_depth "2"' in cmd
     assert '--model_search_colsample_bytree "0.7,0.8"' in cmd
+    assert '--model_search_feature_counts "8,12"' in cmd
 
 
 def test_default_model_search_axes_include_fine_n_estimators():
@@ -261,6 +263,7 @@ def test_cv_selection_excludes_candidates_over_node_budget():
 def test_model_search_csv_rows_include_group_cv_and_baseline_fields():
     record = {
         "rank_input_order": 1,
+        "feature_count": 12,
         "eligible": True,
         "mean_cv_accuracy": 0.91,
         "std_cv_accuracy": 0.02,
@@ -278,6 +281,7 @@ def test_model_search_csv_rows_include_group_cv_and_baseline_fields():
     row = s05.model_search_record_to_csv_row(record)
 
     for key in [
+        "feature_count",
         "mean_cv_accuracy",
         "std_cv_accuracy",
         "mean_cv_fp_rate",
@@ -290,6 +294,66 @@ def test_model_search_csv_rows_include_group_cv_and_baseline_fields():
         "chosen_reason",
     ]:
         assert key in row
+
+
+def test_feature_count_candidates_are_sorted_unique_and_bounded():
+    counts = s05.parse_feature_count_candidates(
+        "15,8,8,99",
+        max_features=12,
+        ranked_count=20,
+    )
+
+    assert counts == [8, 15]
+
+
+def test_feature_count_selection_uses_cv_stability_fp_and_nodes():
+    lower_std = {
+        "feature_count": 8,
+        "selection_record": {
+            "eligible": True,
+            "mean_cv_accuracy": 0.91,
+            "std_cv_accuracy": 0.01,
+            "mean_cv_fp_rate": 0.03,
+            "final_total_nodes": 200,
+        },
+    }
+    higher_std = {
+        "feature_count": 12,
+        "selection_record": {
+            "eligible": True,
+            "mean_cv_accuracy": 0.91,
+            "std_cv_accuracy": 0.04,
+            "mean_cv_fp_rate": 0.01,
+            "final_total_nodes": 120,
+        },
+    }
+
+    assert s05.select_best_feature_count_result([higher_std, lower_std]) is lower_std
+
+
+def test_feature_count_selection_excludes_over_budget_models():
+    oversized = {
+        "feature_count": 8,
+        "selection_record": {
+            "eligible": False,
+            "mean_cv_accuracy": 0.99,
+            "std_cv_accuracy": 0.0,
+            "mean_cv_fp_rate": 0.0,
+            "final_total_nodes": 999,
+        },
+    }
+    eligible = {
+        "feature_count": 12,
+        "selection_record": {
+            "eligible": True,
+            "mean_cv_accuracy": 0.90,
+            "std_cv_accuracy": 0.02,
+            "mean_cv_fp_rate": 0.03,
+            "final_total_nodes": 180,
+        },
+    }
+
+    assert s05.select_best_feature_count_result([oversized, eligible]) is eligible
 
 
 def test_group_cv_search_summary_uses_train_group_cv_and_keeps_valid_out(monkeypatch):

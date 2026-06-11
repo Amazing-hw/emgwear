@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import joblib
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -127,6 +128,31 @@ def test_deploy_feature_extractor_is_standalone_and_matches_training_ppg_feature
     finally:
         if script_path.exists():
             script_path.unlink()
+        try:
+            out_dir.rmdir()
+            out_dir.parent.rmdir()
+        except OSError:
+            pass
+
+
+def test_deploy_feature_extractor_fails_on_missing_feature_formula():
+    out_dir = Path.cwd() / "test_outputs" / f"missing_deploy_formula_{uuid.uuid4().hex}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bundle = {
+        "feature_names": ["FEATURE_NOT_IMPLEMENTED_FOR_DEPLOY"],
+        "fill_values": {"FEATURE_NOT_IMPLEMENTED_FOR_DEPLOY": 0.0},
+        "clip_bounds": {},
+        "threshold": 0.5,
+        "model": FakeModel(),
+    }
+    try:
+        joblib.dump(bundle, out_dir / "model_bundle.pkl")
+
+        with pytest.raises(ValueError, match="missing executable formulas"):
+            s08.export_feature_extractor_script(str(out_dir))
+    finally:
+        for p in out_dir.glob("*"):
+            p.unlink()
         try:
             out_dir.rmdir()
             out_dir.parent.rmdir()

@@ -326,7 +326,9 @@ emg_bp_clean:
 
 --model_search_feature_counts
   搜索最优特征数量。逗号分隔的候选值（如 "8,10,12,15"）。
-  需要先跑过一次 s04 生成 ranked_features.json。
+  由 s05 在同一次模型搜索内完成：每个 k 取 ranked_features.json 的 top-k 特征，
+  用 train group CV 评估，再按 mean accuracy、std、FP rate、节点数、特征数排序。
+  需要配合默认 --model_search_strategy staged_group_cv 使用，不使用 test，也不消耗 valid 做模型选择。
   留空则使用 --max_features 固定值。
 
 --skip
@@ -643,6 +645,7 @@ s03 extract_feature_pool_from_window 末尾（第 1799 行）：
    - CLIP_BOUNDS = {...}            ← 硬编码字典
    - 输出向量构建时先 fill 再 clip
    - 零外部依赖（仅 numpy + scipy）
+   - 如果最终入选特征缺少可执行部署公式，导出阶段直接失败，不会静默写成 0
 ```
 
 ### 部署 bundle 完整内容
@@ -662,12 +665,13 @@ quality_thresholds: {...}          ← 质量评分阈值
 feature_quantiles: {...}           ← OOD 监控分位数
 fingerprint: {...}                 ← 数据/代码版本指纹
 model_search: {...}                ← 模型搜索记录
+feature_count_search: {...}        ← 特征数量搜索记录（候选 k、最终 k、选择依据）
 xgboost_complexity: {total_nodes, avg_nodes_per_tree, max_model_nodes}
 meta: {
   fs_ppg, fs_emg, fs_acc           ← 采样率
   win_sec, step_sec                ← 窗口参数
   n_ppg_channels, n_emg_channels, n_acc_channels
-  ppg_mode: "6ch_avg_single_channel"
+  ppg_mode: "raw6_to_virtual3_chA_basic_features"
   emg_notch_config: {
     notch_freqs_hz: [50,100,150,200,250,300]
     notch_bw_hz: 0.8
@@ -812,6 +816,12 @@ accuracy / precision / recall / f1
 
 ```bash
 python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts
+```
+
+同时搜索特征数量（模型参数和特征数都只用 train group CV 选择）：
+
+```bash
+python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --model_search_feature_counts "8,10,12,15"
 ```
 
 完整流程（含 NPZ 缓存 + 后处理状态机搜参），一条命令：
