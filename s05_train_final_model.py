@@ -303,6 +303,18 @@ def parse_feature_count_candidates(raw, max_features=None, ranked_count=None):
     return sorted(out)
 
 
+def resolve_default_feature_count(max_features, ranked_count):
+    """Resolve the fixed feature count without exceeding available ranked features."""
+    ranked_count = int(ranked_count)
+    if ranked_count <= 0:
+        raise RuntimeError(
+            "No deployable features remain after applying deploy_feature_extractor formula contract."
+        )
+    if max_features is None:
+        return ranked_count
+    return min(int(max_features), ranked_count)
+
+
 def build_default_xgb_params(scale_pos_weight=1.0):
     params = dict(DEFAULT_XGB_PARAMS)
     params["scale_pos_weight"] = float(scale_pos_weight)
@@ -1459,11 +1471,7 @@ def main(args=None):
         )
 
     ranked_count = len(ranked) if ranked is not None else len(fs["selected_features"])
-    if ranked_count <= 0:
-        raise RuntimeError(
-            "No deployable features remain after applying deploy_feature_extractor formula contract."
-        )
-    default_feature_count = args.max_features if args.max_features is not None else ranked_count
+    default_feature_count = resolve_default_feature_count(args.max_features, ranked_count)
     feature_count_search_enabled = bool(str(args.model_search_feature_counts or "").strip())
     if feature_count_search_enabled and not args.model_search:
         raise ValueError("--model_search_feature_counts requires --model_search")

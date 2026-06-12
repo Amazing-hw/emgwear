@@ -898,7 +898,7 @@ python new_new/s05_train_final_model.py --artifact_dir artifacts --max_features 
 
 ```bash
 python -m pytest tests -q
-python -m py_compile s01_data_split.py s02_ir_dc_threshold.py s03_extract_feature_pool.py s04_feature_selection.py s05_train_final_model.py s06_deploy_eval.py s07_postprocess_optimize.py s08_run_pipeline.py
+python -m py_compile deploy_feature_contract.py s01_data_split.py s02_ir_dc_threshold.py s03_extract_feature_pool.py s04_feature_selection.py s05_train_final_model.py s06_deploy_eval.py s07_postprocess_optimize.py s08_run_pipeline.py
 python s06_deploy_eval.py --help
 python s07_postprocess_optimize.py --help
 python s08_run_pipeline.py --help

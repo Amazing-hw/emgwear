@@ -1288,6 +1288,8 @@ def build_feature_formula_map(selected_features):
         ("ACC_STILL_SCORE",      "1/(1+50*mag_std/|mag_mean|)"),
         ("ACC_MAG_P50",          "float(np.percentile(acc_mag, 50))"),
         ("ACC_MAG_P90",          "float(np.percentile(acc_mag, 90))"),
+        ("ACC_SAT_FRAC",         "mean(abs(acc_axis) >= 0.98 * max(abs(acc_axis))) across all ACC samples/axes"),
+        ("ACC_CLIP_RATE",        "fraction of near-zero adjacent differences in ACC axes, abs(diff(acc,axis=0)) < 1e-10"),
         # 8-12Hz 生理震颤
         ("ACC_TREMOR_POW_8_12",  "log1p(power_8_12Hz(acc_mag-mean, fs=100))"),
         ("ACC_TREMOR_RATIO",     "power_8_12Hz / power_0.5-15Hz(acc_mag-mean)"),
@@ -1344,6 +1346,22 @@ def build_feature_formula_map(selected_features):
     # 补充 EMG 跨通道
     ALL_TEMPLATES["EMG_CROSS_CORR"] = "safe_corr(emg_ch0_bp, emg_ch1_bp)"
     ALL_TEMPLATES["EMG_RMS_RATIO"] = "EMG0_RMS / EMG1_RMS"
+    emg_consensus_source = {
+        "RMS": "sqrt(mean(emg_bp^2))",
+        "MAV": "mean(abs(emg envelope))",
+        "WL": "sum(abs(diff(emg_bp)))",
+        "ZC": "zero-crossing rate of emg_bp",
+        "MNF": "mean frequency in 20-450Hz band",
+        "MDF": "median frequency in 20-450Hz band",
+        "PKF": "peak frequency in 20-450Hz band",
+        "PSR": "power ratio (20-100Hz)/(100-450Hz)",
+    }
+    for base, desc in emg_consensus_source.items():
+        pair = f"[EMG0_{base}, EMG1_{base}] ({desc})"
+        ALL_TEMPLATES[f"EMG_consensus_{base}_min"] = f"min({pair})"
+        ALL_TEMPLATES[f"EMG_consensus_{base}_max"] = f"max({pair})"
+        ALL_TEMPLATES[f"EMG_consensus_{base}_range"] = f"max({pair}) - min({pair})"
+        ALL_TEMPLATES[f"EMG_consensus_{base}_cv"] = f"std({pair}) / (mean(abs({pair})) + eps)"
 
     # 为每个 selected feature 查找公式
     result = OrderedDict()
@@ -1383,6 +1401,92 @@ def build_feature_formula_map(selected_features):
             info["category"] = "unknown"
         result[f] = info
     return result
+
+
+def validate_feature_formula_map(formula_map):
+    """Fail deployment export when selected features lack formula documentation."""
+    missing = []
+    for feature, info in formula_map.items():
+        formula = str(info.get("formula", ""))
+        category = str(info.get("category", ""))
+        if "未匹配" in formula or category == "unknown":
+            missing.append(feature)
+    if missing:
+        raise ValueError(
+            "missing deploy feature formula docs for selected features: "
+            + ", ".join(missing[:20])
+        )
+
+
+def xgboost_feature_name(feature_token, selected_features):
+    """Map XGBoost feature tokens such as 0 or f0 to selected feature names."""
+    if feature_token == "Leaf":
+        return "Leaf"
+    token = str(feature_token)
+    match = re.fullmatch(r"f?(\d+)", token)
+    if not match:
+        return token
+    idx = int(match.group(1))
+    return selected_features[idx] if 0 <= idx < len(selected_features) else token
+
+
+def parse_xgboost_dump_nodes(trees_txt, selected_features):
+    """Parse text dump nodes into structured rows for deployment review."""
+    rows = []
+    for tidx, tree in enumerate(trees_txt):
+        for line in tree.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("booster"):
+                continue
+            node_id_text, sep, node_str = line.partition(":")
+            if not sep:
+                continue
+            node_id = int(node_id_text.strip())
+            node_str = node_str.strip()
+
+            if "leaf=" in node_str:
+                leaf_match = re.search(r"leaf=([^,\s]+)", node_str)
+                cover_match = re.search(r"cover=([^,\s]+)", node_str)
+                rows.append({
+                    "Tree": tidx,
+                    "Node": node_id,
+                    "ID": f"{tidx}-{node_id}",
+                    "Feature": "Leaf",
+                    "FeatureName": "Leaf",
+                    "Split": "",
+                    "Yes": "",
+                    "No": "",
+                    "Missing": "",
+                    "Gain": "",
+                    "Cover": cover_match.group(1) if cover_match else "",
+                    "LeafValue": float(leaf_match.group(1)) if leaf_match else "",
+                })
+                continue
+
+            split_match = re.search(r"\[f(\d+)([<>=!]+)([^\]]+)\]", node_str)
+            if not split_match:
+                continue
+            feat_idx = int(split_match.group(1))
+
+            def _field(name):
+                match = re.search(rf"{name}=([^,\s]+)", node_str)
+                return match.group(1) if match else ""
+
+            rows.append({
+                "Tree": tidx,
+                "Node": node_id,
+                "ID": f"{tidx}-{node_id}",
+                "Feature": f"f{feat_idx}",
+                "FeatureName": xgboost_feature_name(f"f{feat_idx}", selected_features),
+                "Split": split_match.group(3),
+                "Yes": _field("yes"),
+                "No": _field("no"),
+                "Missing": _field("missing"),
+                "Gain": _field("gain"),
+                "Cover": _field("cover"),
+                "LeafValue": "",
+            })
+    return rows
 
 
 def export_deploy_artifacts(artifact_dir):
@@ -1470,6 +1574,7 @@ def export_deploy_artifacts(artifact_dir):
     # 2. feature_formulas.json
     # =========================================================
     formula_map = build_feature_formula_map(selected_features)
+    validate_feature_formula_map(formula_map)
     formulas_out = OrderedDict([
         ("pipeline_step", 2),
         ("description", "Stage2 — 3s 滑动窗口特征提取 (单通道 PPG + EMG + ACC) + XGBoost"),
@@ -1508,44 +1613,14 @@ def export_deploy_artifacts(artifact_dir):
     # =========================================================
     try:
         nodes_df = booster.trees_to_data_frame()
-        fmap = {i: name for i, name in enumerate(selected_features)}
         if "Feature" in nodes_df.columns:
             nodes_df["FeatureName"] = nodes_df["Feature"].apply(
-                lambda idx: fmap.get(int(idx), str(idx)) if idx != "Leaf" else "Leaf")
+                lambda token: xgboost_feature_name(token, selected_features))
         nodes_df.to_csv(_os.path.join(out_dir, "xgboost_nodes.csv"), index=False)
         print(f"  [OK] xgboost_nodes.csv ({len(nodes_df)} nodes)")
     except Exception:
         try:
-            rows = []
-            fmap = {i: name for i, name in enumerate(selected_features)}
-            for tidx, tree in enumerate(trees_txt):
-                for line in tree.split("\n"):
-                    line = line.strip()
-                    if not line or line.startswith("booster"):
-                        continue
-                    parts = line.split(":")
-                    node_id = int(parts[0].strip())
-                    node_str = parts[1].strip() if len(parts) > 1 else ""
-                    if "leaf=" in node_str:
-                        leaf_val = float(node_str.split("leaf=")[1].split(",")[0].split()[0])
-                        rows.append({"Tree": tidx, "Node": node_id, "ID": f"{tidx}-{node_id}",
-                                      "Feature": "Leaf", "FeatureName": "Leaf",
-                                      "Split": "", "Yes": "", "No": "", "Missing": "",
-                                      "Gain": "", "Cover": "", "LeafValue": leaf_val})
-                    elif "[" in node_str and "]" in node_str:
-                        feat_part = node_str.split("[")[1].split("]")[0]
-                        feat_idx = int(feat_part.replace("f", ""))
-                        feat_name = fmap.get(feat_idx, f"f{feat_idx}")
-                        condition = node_str.split("]")[1].strip().split(",")[0] if "]" in node_str else ""
-                        yes_child = node_str.split("yes=")[1].split(",")[0] if "yes=" in node_str else ""
-                        no_child = node_str.split("no=")[1].split(",")[0] if "no=" in node_str else ""
-                        missing = node_str.split("missing=")[1].split(",")[0] if "missing=" in node_str else ""
-                        gain = node_str.split("gain=")[1].split(",")[0] if "gain=" in node_str else ""
-                        cover = node_str.split("cover=")[1].split(",")[0].split()[0] if "cover=" in node_str else ""
-                        rows.append({"Tree": tidx, "Node": node_id, "ID": f"{tidx}-{node_id}",
-                                      "Feature": f"f{feat_idx}", "FeatureName": feat_name,
-                                      "Split": condition, "Yes": yes_child, "No": no_child, "Missing": missing,
-                                      "Gain": gain, "Cover": cover, "LeafValue": ""})
+            rows = parse_xgboost_dump_nodes(trees_txt, selected_features)
             if rows:
                 pd.DataFrame(rows).to_csv(_os.path.join(out_dir, "xgboost_nodes.csv"), index=False)
                 print(f"  [OK] xgboost_nodes.csv ({len(rows)} nodes, parsed from tree dump)")

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -238,6 +239,42 @@ def test_apply_preprocess_applies_training_clip_bounds():
     )
 
     assert X.tolist() == [[1.0, 2.0, -1.0]]
+
+
+def test_xgboost_dump_node_parser_maps_feature_names():
+    trees = [
+        "0:[f0<39.0625] yes=1,no=2,missing=2,gain=6.7,cover=20\n"
+        "\t1:leaf=-0.1,cover=8.5\n"
+        "\t2:[f1<0.28] yes=3,no=4,missing=4,gain=3.2,cover=5.25"
+    ]
+
+    rows = s06.parse_xgboost_dump_nodes(trees, ["feat_a", "feat_b"])
+
+    assert rows[0]["Feature"] == "f0"
+    assert rows[0]["FeatureName"] == "feat_a"
+    assert rows[0]["Split"] == "39.0625"
+    assert rows[2]["Feature"] == "f1"
+    assert rows[2]["FeatureName"] == "feat_b"
+
+
+def test_deploy_feature_formula_map_documents_consensus_and_acc_features():
+    formulas = s06.build_feature_formula_map([
+        "EMG_consensus_WL_max",
+        "EMG_consensus_MDF_min",
+        "ACC_SAT_FRAC",
+        "ACC_CLIP_RATE",
+    ])
+
+    for info in formulas.values():
+        assert "未匹配" not in info["formula"]
+        assert info["category"] != "unknown"
+
+
+def test_validate_feature_formula_map_rejects_unmatched_formula():
+    formulas = s06.build_feature_formula_map(["FEATURE_WITHOUT_FORMULA"])
+
+    with pytest.raises(ValueError, match="missing deploy feature formula docs"):
+        s06.validate_feature_formula_map(formulas)
 
 
 def test_postprocess_config_source_message_distinguishes_optimized_from_saved_default():

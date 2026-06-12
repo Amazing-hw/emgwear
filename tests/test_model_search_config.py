@@ -429,7 +429,7 @@ def test_s05_main_drops_non_deployable_features_from_legacy_artifacts():
             threshold_objective="f1",
             threshold_beta=0.5,
             threshold_min_precision=0.95,
-            max_features=None,
+            max_features=6,
             model_search=False,
             max_model_nodes=500,
             model_search_feature_counts="",

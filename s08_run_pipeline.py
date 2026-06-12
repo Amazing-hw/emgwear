@@ -1103,8 +1103,9 @@ def export_deploy_cookbook(artifact_dir):
             print(f"[WARN] final_model_config.json 读取失败，deploy_cookbook 使用默认后处理参数: {e}")
 
     # Build feature formulas from s06
-    from s06_deploy_eval import build_feature_formula_map
+    from s06_deploy_eval import build_feature_formula_map, validate_feature_formula_map
     formula_map = build_feature_formula_map(selected)
+    validate_feature_formula_map(formula_map)
 
     cookbook = {
         "_title": "手表佩戴活体检测 (PPG+EMG+ACC) — 部署配方",
@@ -1306,7 +1307,7 @@ def main():
   %(prog)s --dataset_dir dataset --artifact_dir artifacts
   %(prog)s --stop_after s04
   %(prog)s --skip s02,s03
-  %(prog)s --artifact_dir artifacts --export_deploy  (仅评估 + 导出)
+  %(prog)s --artifact_dir artifacts --skip s01,s02,s03,s04,s05  (仅评估 + 导出)
   %(prog)s --dataset_dir dataset --artifact_dir artifacts --export_window_cache --optimize_postprocess
 """)
 
