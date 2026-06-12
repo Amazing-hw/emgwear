@@ -17,6 +17,7 @@ import argparse
 import logging
 import joblib
 from itertools import product
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -537,9 +538,9 @@ def _json_safe_model_search_record(record):
     return out
 
 
-def train_xgb_with_params(params, X_train, y_train):
+def train_xgb_with_params(params, X_train, y_train, n_jobs=None):
     fit_params = dict(params)
-    fit_params["n_jobs"] = -1
+    fit_params["n_jobs"] = -1 if n_jobs is None else int(n_jobs)
     model = xgb.XGBClassifier(**fit_params)
     model.fit(X_train, y_train, verbose=False)
     return model
@@ -618,7 +619,8 @@ def _std_or_zero(values):
 
 
 def evaluate_group_cv_candidate(candidate, args, X_train, y_train, groups=None,
-                                scale_pos_weight=1.0, splits=None, stage="cv"):
+                                scale_pos_weight=1.0, splits=None, stage="cv",
+                                n_jobs=None):
     params = dict(candidate["params"])
     if splits is None:
         splits, group_source = _group_cv_splits(
@@ -633,14 +635,14 @@ def evaluate_group_cv_candidate(candidate, args, X_train, y_train, groups=None,
 
     accuracies, fp_rates, precisions, recalls = [], [], [], []
     for train_idx, valid_idx in splits:
-        model = train_xgb_with_params(params, X_train[train_idx], y_train[train_idx])
+        model = train_xgb_with_params(params, X_train[train_idx], y_train[train_idx], n_jobs=n_jobs)
         metrics = eval_model(model, X_train[valid_idx], y_train[valid_idx], threshold=0.5)
         accuracies.append(float(metrics.get("accuracy", 0.0)))
         fp_rates.append(_window_fp_rate_from_metrics(metrics))
         precisions.append(float(metrics.get("precision", 0.0)))
         recalls.append(float(metrics.get("recall", 0.0)))
 
-    final_model = train_xgb_with_params(params, X_train, y_train)
+    final_model = train_xgb_with_params(params, X_train, y_train, n_jobs=n_jobs)
     final_total_nodes = count_xgb_nodes(final_model)
     eligible = int(final_total_nodes) <= int(getattr(args, "max_model_nodes", 500))
 
@@ -743,8 +745,9 @@ def model_search_record_to_csv_row(record):
     return row
 
 
-def evaluate_model_search_candidate(params, idx, stage, args, X_train, y_train, X_valid, y_valid):
-    candidate = train_xgb_with_params(params, X_train, y_train)
+def evaluate_model_search_candidate(params, idx, stage, args, X_train, y_train, X_valid, y_valid,
+                                    n_jobs=None):
+    candidate = train_xgb_with_params(params, X_train, y_train, n_jobs=n_jobs)
     best_threshold = search_threshold_by_valid(
         candidate, X_valid, y_valid,
         objective=args.threshold_objective,
@@ -792,15 +795,30 @@ def search_xgb_hyperparameters_group_cv(args, X_train, y_train, groups=None,
     stage_a_splits = all_splits[:1]
     stage_a_records = []
     stage_a_models = {}
-    logger.info("model_search staged_group_cv: stage A evaluating %d sampled candidates",
-                len(candidates))
-    for cand in candidates:
-        record, model = evaluate_group_cv_candidate(
+    n_workers = max(1, int(getattr(args, "model_search_workers", 4)))
+    logger.info("model_search staged_group_cv: stage A evaluating %d sampled candidates (workers=%d)",
+                len(candidates), n_workers)
+
+    def _eval_stage_a(cand):
+        return evaluate_group_cv_candidate(
             cand, args, X_train, y_train, groups=groups, scale_pos_weight=scale_pos_weight,
-            splits=stage_a_splits, stage="stage_a_sample")
-        record["group_source"] = group_source
-        stage_a_records.append(record)
-        stage_a_models[_freeze_params(record["params"])] = model
+            splits=stage_a_splits, stage="stage_a_sample",
+            n_jobs=1 if n_workers > 1 else None)
+
+    if n_workers > 1 and len(candidates) > 4:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_eval_stage_a, c): c for c in candidates}
+            for future in as_completed(futures):
+                record, model = future.result()
+                record["group_source"] = group_source
+                stage_a_records.append(record)
+                stage_a_models[_freeze_params(record["params"])] = model
+    else:
+        for cand in candidates:
+            record, model = _eval_stage_a(cand)
+            record["group_source"] = group_source
+            stage_a_records.append(record)
+            stage_a_models[_freeze_params(record["params"])] = model
 
     stage2_top_k = max(1, int(getattr(args, "model_search_stage2_top_k", 80)))
     default_records = [r for r in stage_a_records if r.get("is_default_params", False)]
@@ -829,15 +847,29 @@ def search_xgb_hyperparameters_group_cv(args, X_train, y_train, groups=None,
 
     records = []
     models = {}
-    logger.info("model_search staged_group_cv: stage B CV evaluating %d candidates (%d folds)",
-                len(stage_b_candidates), len(all_splits))
-    for cand in stage_b_candidates:
-        record, model = evaluate_group_cv_candidate(
+    logger.info("model_search staged_group_cv: stage B CV evaluating %d candidates (%d folds, workers=%d)",
+                len(stage_b_candidates), len(all_splits), n_workers)
+
+    def _eval_stage_b(cand):
+        return evaluate_group_cv_candidate(
             cand, args, X_train, y_train, groups=groups, scale_pos_weight=scale_pos_weight,
-            splits=all_splits, stage="stage_b_group_cv")
-        record["group_source"] = group_source
-        records.append(record)
-        models[_freeze_params(record["params"])] = model
+            splits=all_splits, stage="stage_b_group_cv",
+            n_jobs=1 if n_workers > 1 else None)
+
+    if n_workers > 1 and len(stage_b_candidates) > 2:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_eval_stage_b, c): c for c in stage_b_candidates}
+            for future in as_completed(futures):
+                record, model = future.result()
+                record["group_source"] = group_source
+                records.append(record)
+                models[_freeze_params(record["params"])] = model
+    else:
+        for cand in stage_b_candidates:
+            record, model = _eval_stage_b(cand)
+            record["group_source"] = group_source
+            records.append(record)
+            models[_freeze_params(record["params"])] = model
 
     best = select_best_group_cv_record(
         records,
@@ -877,6 +909,7 @@ def search_xgb_hyperparameters_group_cv(args, X_train, y_train, groups=None,
         "valid_used_for_model_selection": False,
         "selection_policy": "mean_cv_accuracy_std_fp_nodes",
         "max_model_nodes": int(args.max_model_nodes),
+        "model_search_workers": int(n_workers),
         "accuracy_tolerance": float(getattr(args, "model_search_accuracy_tolerance", 0.0)),
         "max_candidates": int(getattr(args, "model_search_max_candidates", 600)),
         "stage2_top_k": int(stage2_top_k),
@@ -918,19 +951,39 @@ def search_xgb_hyperparameters(args, X_train, y_train, X_valid, y_valid,
         params.update(dict(zip(stage1_keys, values)))
         stage1_plan.append(params)
 
-    logger.info("model_search enabled: stage1 evaluating %d structure candidates", len(stage1_plan))
+    n_workers_valid = max(1, int(getattr(args, "model_search_workers", 4)))
+    logger.info("model_search enabled: stage1 evaluating %d structure candidates (workers=%d)",
+                len(stage1_plan), n_workers_valid)
     candidate_count = 0
     stage1_records = []
-    for params in stage1_plan:
-        candidate_count += 1
-        candidate, record = evaluate_model_search_candidate(
-            params, candidate_count, "stage1_structure", args, X_train, y_train, X_valid, y_valid)
-        records.append(record)
-        stage1_records.append(record)
-        if is_better_model_search_record(
-                record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
-            best = record
-            best_model = candidate
+
+    def _eval_stage1(args_tuple):
+        params, idx = args_tuple
+        return evaluate_model_search_candidate(
+            params, idx, "stage1_structure", args, X_train, y_train, X_valid, y_valid,
+            n_jobs=1 if n_workers_valid > 1 else None)
+
+    if n_workers_valid > 1 and len(stage1_plan) > 4:
+        with ThreadPoolExecutor(max_workers=n_workers_valid) as executor:
+            plan_with_idx = [(p, i + 1) for i, p in enumerate(stage1_plan)]
+            for candidate, record in executor.map(_eval_stage1, plan_with_idx):
+                candidate_count += 1
+                records.append(record)
+                stage1_records.append(record)
+                if is_better_model_search_record(
+                        record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
+                    best = record
+                    best_model = candidate
+    else:
+        for i, params in enumerate(stage1_plan):
+            candidate_count += 1
+            candidate, record = _eval_stage1((params, candidate_count))
+            records.append(record)
+            stage1_records.append(record)
+            if is_better_model_search_record(
+                    record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
+                best = record
+                best_model = candidate
 
     stage1_records.sort(key=lambda r: (
         not r["eligible"],
@@ -954,17 +1007,34 @@ def search_xgb_hyperparameters(args, X_train, y_train, X_valid, y_valid,
             seen.add(frozen)
             stage2_plan.append(params)
 
-    logger.info("model_search enabled: stage2 refining %d candidates from top %d structures",
-                len(stage2_plan), len(refine_structures))
-    for params in stage2_plan:
-        candidate_count += 1
-        candidate, record = evaluate_model_search_candidate(
-            params, candidate_count, "stage2_refine", args, X_train, y_train, X_valid, y_valid)
-        records.append(record)
-        if is_better_model_search_record(
-                record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
-            best = record
-            best_model = candidate
+    logger.info("model_search enabled: stage2 refining %d candidates from top %d structures (workers=%d)",
+                len(stage2_plan), len(refine_structures), n_workers_valid)
+
+    def _eval_stage2(args_tuple):
+        params, idx = args_tuple
+        return evaluate_model_search_candidate(
+            params, idx, "stage2_refine", args, X_train, y_train, X_valid, y_valid,
+            n_jobs=1 if n_workers_valid > 1 else None)
+
+    if n_workers_valid > 1 and len(stage2_plan) > 4:
+        with ThreadPoolExecutor(max_workers=n_workers_valid) as executor:
+            plan_with_idx = [(p, candidate_count + i + 1) for i, p in enumerate(stage2_plan)]
+            for candidate, record in executor.map(_eval_stage2, plan_with_idx):
+                candidate_count += 1
+                records.append(record)
+                if is_better_model_search_record(
+                        record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
+                    best = record
+                    best_model = candidate
+    else:
+        for i, params in enumerate(stage2_plan):
+            candidate_count += 1
+            candidate, record = _eval_stage2((params, candidate_count))
+            records.append(record)
+            if is_better_model_search_record(
+                    record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
+                best = record
+                best_model = candidate
 
     if best_model is None:
         raise RuntimeError(
@@ -1327,6 +1397,8 @@ def main(args=None):
     parser.add_argument("--model_search_cv_folds", type=int, default=3)
     parser.add_argument("--model_search_cv_repeats", type=int, default=2)
     parser.add_argument("--model_search_random_state", type=int, default=42)
+    parser.add_argument("--model_search_workers", type=int, default=4,
+                        help="Number of parallel workers for model search candidate evaluation (default 4)")
     parser.add_argument("--model_search_accuracy_tolerance", type=float, default=0.0)
     parser.add_argument("--model_search_stage1_top_k", type=int, default=4)
     parser.add_argument("--model_search_n_estimators", type=str, default="20,25,30,35,40,45,50,55,60")
@@ -1406,15 +1478,40 @@ def main(args=None):
         feature_counts = [int(default_feature_count)]
 
     fit_results = []
-    for feature_count in feature_counts:
-        selected_for_count = select_features_for_count(fs, ranked, feature_count)
-        logger.info("feature_count candidate k=%d -> %d selected features",
-                    int(feature_count), len(selected_for_count))
-        fit_results.append(train_final_model_for_features(
-            args, fs, df_train_raw, df_valid_raw,
-            feature_pool_train_path, splits_path,
-            selected_for_count, feature_count,
-        ))
+    n_workers_feature = max(1, int(getattr(args, "model_search_workers", 4)))
+
+    if n_workers_feature > 1 and len(feature_counts) > 1 and args.model_search:
+        # Parallelize across feature counts; each inner search uses 1 thread to avoid oversubscription
+        import copy
+        logger.info("feature_count search: parallel across %d counts (workers=%d)",
+                    len(feature_counts), n_workers_feature)
+
+        def _train_one_count(feature_count):
+            args_copy = copy.copy(args)
+            args_copy.model_search_workers = 1
+            selected_for_count = select_features_for_count(fs, ranked, feature_count)
+            logger.info("feature_count candidate k=%d -> %d selected features",
+                        int(feature_count), len(selected_for_count))
+            return train_final_model_for_features(
+                args_copy, fs, df_train_raw, df_valid_raw,
+                feature_pool_train_path, splits_path,
+                selected_for_count, feature_count,
+            )
+
+        with ThreadPoolExecutor(max_workers=n_workers_feature) as executor:
+            futures = {executor.submit(_train_one_count, fc): fc for fc in feature_counts}
+            for future in as_completed(futures):
+                fit_results.append(future.result())
+    else:
+        for feature_count in feature_counts:
+            selected_for_count = select_features_for_count(fs, ranked, feature_count)
+            logger.info("feature_count candidate k=%d -> %d selected features",
+                        int(feature_count), len(selected_for_count))
+            fit_results.append(train_final_model_for_features(
+                args, fs, df_train_raw, df_valid_raw,
+                feature_pool_train_path, splits_path,
+                selected_for_count, feature_count,
+            ))
 
     chosen_result = select_best_feature_count_result(
         fit_results,

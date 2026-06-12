@@ -490,7 +490,7 @@ def test_group_cv_search_summary_uses_train_group_cv_and_keeps_valid_out(monkeyp
                     return ["0:leaf=0"] * 5
             return Booster()
 
-    monkeypatch.setattr(s05, "train_xgb_with_params", lambda params, X, y: DummyModel())
+    monkeypatch.setattr(s05, "train_xgb_with_params", lambda params, X, y, n_jobs=None: DummyModel())
 
     _model, summary, records = s05.search_xgb_hyperparameters(
         args, X_train, y_train, X_valid, y_valid, scale_pos_weight=1.0, groups=groups

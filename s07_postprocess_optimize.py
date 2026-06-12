@@ -6,13 +6,30 @@
 import argparse
 import json
 import os
+import pickle
 from itertools import product
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from s06_deploy_eval import apply_postprocess
+
+# Module-level storage for worker processes (ProcessPoolExecutor initializer pattern)
+_SCORE_DATA = None
+
+
+def _init_score_worker(payload_bytes):
+    global _SCORE_DATA
+    _SCORE_DATA = pickle.loads(payload_bytes)
+
+
+def _score_grid_point(params):
+    caches, skip_initial_windows, fp_cost = _SCORE_DATA
+    metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
+    score = score_metrics(metrics, fp_cost=fp_cost)
+    return {**params, **metrics, "score": float(score)}
 
 
 REQUIRED_KEYS = (
@@ -172,16 +189,36 @@ def score_metrics(metrics, fp_cost=4.0):
     )
 
 
-def search_postprocess(caches, fp_cost=4.0, skip_initial_windows=0):
+def search_postprocess(caches, fp_cost=4.0, skip_initial_windows=0, n_workers=None):
+    grid = list(iter_param_grid())
+    n_workers = max(1, int(n_workers or 1))
+
+    if n_workers <= 1 or len(grid) <= 4:
+        rows = []
+        best = None
+        for params in grid:
+            metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
+            score = score_metrics(metrics, fp_cost=fp_cost)
+            row = {**params, **metrics, "score": float(score)}
+            rows.append(row)
+            if best is None or score > best["score"]:
+                best = row
+        return best, pd.DataFrame(rows).sort_values("score", ascending=False)
+
+    payload = (caches, skip_initial_windows, float(fp_cost))
+    payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+    chunksize = max(1, len(grid) // (n_workers * 4))
+
     rows = []
-    best = None
-    for params in iter_param_grid():
-        metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
-        score = score_metrics(metrics, fp_cost=fp_cost)
-        row = {**params, **metrics, "score": float(score)}
-        rows.append(row)
-        if best is None or score > best["score"]:
-            best = row
+    with ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=_init_score_worker,
+        initargs=(payload_bytes,),
+    ) as executor:
+        for row in executor.map(_score_grid_point, grid, chunksize=chunksize):
+            rows.append(row)
+
+    best = max(rows, key=lambda r: r["score"])
     return best, pd.DataFrame(rows).sort_values("score", ascending=False)
 
 
@@ -265,6 +302,8 @@ def main(args=None):
     parser.add_argument("--cache_root", type=str, default="window_outputs")
     parser.add_argument("--fp_cost", type=float, default=4.0)
     parser.add_argument("--skip_initial_windows", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of parallel workers for postprocess grid search (default 1=serial)")
     parser.add_argument("--thresholds", type=str, default="0.3,0.4,0.5,0.6,0.7,0.8")
 
     if args is None:
@@ -280,7 +319,8 @@ def main(args=None):
 
     caches = load_cache_dir(cache_dir)
     best, results = search_postprocess(
-        caches, fp_cost=args.fp_cost, skip_initial_windows=args.skip_initial_windows
+        caches, fp_cost=args.fp_cost, skip_initial_windows=args.skip_initial_windows,
+        n_workers=args.workers,
     )
 
     out_dir = os.path.join(args.artifact_dir, "postprocess_opt")
