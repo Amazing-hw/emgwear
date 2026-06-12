@@ -30,6 +30,8 @@ if sys.platform != "win32":
         pass
 import xgboost as xgb
 
+from deploy_feature_contract import NON_DEPLOY_FEATURES, split_deployable_features
+
 from sklearn.model_selection import GroupKFold
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import roc_auc_score
@@ -225,10 +227,17 @@ MIN_ANTI_SPOOF_FEATURES_DEFAULT = 3
 
 
 def get_feature_cols(df):
-    exclude = set(META_COLS)
+    exclude = set(META_COLS) | set(NON_DEPLOY_FEATURES)
     cols = [c for c in df.columns if c not in exclude]
     cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
-    return cols
+    deployable, blocked = split_deployable_features(cols)
+    if blocked:
+        logger.warning(
+            "Dropped %d feature columns without deploy formulas: %s",
+            len(blocked),
+            blocked[:20],
+        )
+    return deployable
 
 
 def feature_to_group(feature):

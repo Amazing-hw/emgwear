@@ -44,3 +44,39 @@ def test_clean_features_removes_high_vif_features():
 
     assert len(kept) < 3
     assert removed["high_vif"]
+
+
+def test_get_feature_cols_excludes_non_deploy_diagnostic_columns():
+    import s04_feature_selection as s04
+
+    df = pd.DataFrame({
+        "sample_name": ["s1", "s2"],
+        "h5_file": ["a.h5", "b.h5"],
+        "target": [0, 1],
+        "start_100hz": [0, 100],
+        "TOTAL_INVALID_COUNT": [1.0, 0.0],
+        "EMG_consensus_WL_max": [2.0, 3.0],
+    })
+
+    cols = s04.get_feature_cols(df)
+
+    assert "TOTAL_INVALID_COUNT" not in cols
+    assert "EMG_consensus_WL_max" in cols
+
+
+def test_get_feature_cols_excludes_features_without_deploy_formula():
+    import s04_feature_selection as s04
+
+    df = pd.DataFrame({
+        "sample_name": ["s1", "s2"],
+        "h5_file": ["a.h5", "b.h5"],
+        "target": [0, 1],
+        "start_100hz": [0, 100],
+        "PPG_mean": [1.0, 2.0],
+        "UNSUPPORTED_MODEL_FEATURE": [3.0, 4.0],
+    })
+
+    cols = s04.get_feature_cols(df)
+
+    assert "PPG_mean" in cols
+    assert "UNSUPPORTED_MODEL_FEATURE" not in cols

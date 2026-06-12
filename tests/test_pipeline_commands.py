@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import s03_extract_feature_pool as s03
+import s04_feature_selection as s04
 import s08_run_pipeline as s08
 
 
@@ -125,6 +126,118 @@ def test_deploy_feature_extractor_is_standalone_and_matches_training_ppg_feature
 
         expected = [float(trained[name]) for name in feature_order]
         np.testing.assert_allclose(deployed, expected, rtol=1e-9, atol=1e-9)
+    finally:
+        if script_path.exists():
+            script_path.unlink()
+        try:
+            out_dir.rmdir()
+            out_dir.parent.rmdir()
+        except OSError:
+            pass
+
+
+def test_deploy_feature_map_covers_s03_generated_deployable_features():
+    rng = np.random.default_rng(17)
+    ppg_6ch = rng.normal(50000, 4000, size=(300, 6))
+    emg = rng.normal(0, 1, size=(3000, 2))
+    acc = rng.normal(0, 1, size=(300, 3))
+    generated = s03.extract_feature_pool_from_window(
+        s03.build_3ch_ppg(ppg_6ch),
+        emg,
+        acc,
+    )
+    non_deploy = set(getattr(s04, "NON_DEPLOY_FEATURES", set()))
+    deployable = sorted(k for k in generated if k not in non_deploy)
+
+    missing = sorted(set(deployable) - set(s08._build_feature_code_map()))
+
+    assert missing == []
+
+
+def test_deploy_feature_extractor_matches_training_consensus_features():
+    feature_order = [
+        "EMG_consensus_WL_max",
+        "EMG_consensus_MDF_min",
+        "EMG_consensus_MDF_max",
+        "ACC_SAT_FRAC",
+        "ACC_CLIP_RATE",
+    ]
+    formula_map = s08._build_feature_code_map()
+    feat_block = "\n".join(f'    f["{name}"] = {formula_map[name]}' for name in feature_order)
+    script = s08._build_extractor_script_template(
+        len(feature_order),
+        json.dumps(feature_order),
+        json.dumps({name: 0.0 for name in feature_order}),
+        json.dumps({}),
+        feat_block,
+    )
+    out_dir = Path.cwd() / "test_outputs" / "deploy_feature_extractor_consensus"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    script_path = out_dir / f"deploy_feature_extractor_{uuid.uuid4().hex}.py"
+    try:
+        script_path.write_text(script, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("deploy_feature_extractor_consensus_tmp", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        rng = np.random.default_rng(23)
+        ppg_6ch = rng.normal(50000, 4000, size=(300, 6))
+        emg = rng.normal(0, 1, size=(3000, 2))
+        acc = rng.normal(0, 1, size=(300, 3))
+
+        deployed = module.extract_features(ppg_6ch, emg, acc)
+        trained = s03.extract_feature_pool_from_window(
+            s03.build_3ch_ppg(ppg_6ch),
+            emg,
+            acc,
+        )
+
+        expected = [float(trained[name]) for name in feature_order]
+        np.testing.assert_allclose(deployed, expected, rtol=1e-9, atol=1e-9)
+    finally:
+        if script_path.exists():
+            script_path.unlink()
+        try:
+            out_dir.rmdir()
+            out_dir.parent.rmdir()
+        except OSError:
+            pass
+
+
+def test_deploy_feature_extractor_matches_training_for_all_deployable_features():
+    rng = np.random.default_rng(101)
+    ppg_6ch = rng.normal(50000, 4000, size=(300, 6))
+    emg = rng.normal(0, 1, size=(3000, 2))
+    acc = rng.normal(0, 1, size=(300, 3))
+    trained = s03.extract_feature_pool_from_window(
+        s03.build_3ch_ppg(ppg_6ch),
+        emg,
+        acc,
+    )
+    non_deploy = set(getattr(s04, "NON_DEPLOY_FEATURES", set()))
+    feature_order = sorted(k for k in trained if k not in non_deploy)
+    formula_map = s08._build_feature_code_map()
+    feat_block = "\n".join(f'    f["{name}"] = {formula_map[name]}' for name in feature_order)
+    script = s08._build_extractor_script_template(
+        len(feature_order),
+        json.dumps(feature_order),
+        json.dumps({name: 0.0 for name in feature_order}),
+        json.dumps({}),
+        feat_block,
+    )
+    out_dir = Path.cwd() / "test_outputs" / "deploy_feature_extractor_all_features"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    script_path = out_dir / f"deploy_feature_extractor_{uuid.uuid4().hex}.py"
+    try:
+        script_path.write_text(script, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("deploy_feature_extractor_all_tmp", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        deployed = np.array(module.extract_features(ppg_6ch, emg, acc), dtype=float)
+        expected = np.array([float(trained[name]) for name in feature_order], dtype=float)
+
+        np.testing.assert_allclose(deployed, expected, rtol=1e-7, atol=1e-7)
     finally:
         if script_path.exists():
             script_path.unlink()

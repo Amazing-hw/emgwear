@@ -22,6 +22,10 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
+from deploy_feature_contract import (
+    filter_ranked_deployable_features,
+    split_deployable_features,
+)
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix
@@ -992,6 +996,28 @@ def search_xgb_hyperparameters(args, X_train, y_train, X_valid, y_valid,
     }, records
 
 
+def apply_deployable_feature_contract(fs, ranked=None):
+    """Remove features that cannot be reproduced by deploy_feature_extractor."""
+    selected = list(fs.get("selected_features", []))
+    selected_keep, selected_blocked = split_deployable_features(selected)
+    ranked_keep, ranked_blocked = filter_ranked_deployable_features(ranked)
+
+    out_fs = dict(fs)
+    out_fs["selected_features"] = selected_keep
+    report = {
+        "enabled": True,
+        "source": "deploy_feature_extractor_formula_map",
+        "removed_selected_features": selected_blocked,
+        "removed_ranked_features": ranked_blocked,
+        "selected_before": int(len(selected)),
+        "selected_after": int(len(selected_keep)),
+        "ranked_before": int(len(ranked)) if ranked is not None else None,
+        "ranked_after": int(len(ranked_keep)) if ranked_keep is not None else None,
+    }
+    out_fs["deployable_feature_contract"] = report
+    return out_fs, ranked_keep, report
+
+
 def select_features_for_count(fs, ranked, feature_count):
     if ranked:
         k = min(int(feature_count), len(ranked))
@@ -1348,7 +1374,23 @@ def main(args=None):
         with open(ranked_features_path, "r", encoding="utf-8") as f:
             ranked = json.load(f)
 
+    fs, ranked, deployable_feature_contract = apply_deployable_feature_contract(fs, ranked)
+    if deployable_feature_contract["removed_selected_features"]:
+        logger.warning(
+            "Removed selected features without deploy formulas before training: %s",
+            deployable_feature_contract["removed_selected_features"][:20],
+        )
+    if deployable_feature_contract["removed_ranked_features"]:
+        logger.warning(
+            "Removed ranked features without deploy formulas before training: %s",
+            deployable_feature_contract["removed_ranked_features"][:20],
+        )
+
     ranked_count = len(ranked) if ranked is not None else len(fs["selected_features"])
+    if ranked_count <= 0:
+        raise RuntimeError(
+            "No deployable features remain after applying deploy_feature_extractor formula contract."
+        )
     default_feature_count = args.max_features if args.max_features is not None else ranked_count
     feature_count_search_enabled = bool(str(args.model_search_feature_counts or "").strip())
     if feature_count_search_enabled and not args.model_search:
@@ -1440,6 +1482,7 @@ def main(args=None):
         "clip_bounds": clip_bounds,
         "quality_thresholds": quality_thresholds,
         "feature_quantiles": feature_quantiles,
+        "deployable_feature_contract": deployable_feature_contract,
         "fingerprint": fingerprint,
         "model_search": model_search_summary,
         "feature_count_search": feature_count_search_summary,
@@ -1478,6 +1521,7 @@ def main(args=None):
         "clip_bounds": clip_bounds,
         "quality_thresholds": quality_thresholds,
         "feature_quantiles": feature_quantiles,
+        "deployable_feature_contract": deployable_feature_contract,
         "preprocess": {
             "feature_order": selected_features,
             "fill_rule": "NaN/inf -> train median fill_values",

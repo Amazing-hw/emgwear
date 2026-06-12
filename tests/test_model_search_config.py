@@ -1,8 +1,13 @@
+import json
+import shutil
 import sys
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import joblib
 import numpy as np
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -354,6 +359,97 @@ def test_feature_count_selection_excludes_over_budget_models():
     }
 
     assert s05.select_best_feature_count_result([oversized, eligible]) is eligible
+
+
+def test_s05_filters_selected_and_ranked_features_to_deployable_contract():
+    fs = {
+        "selected_features": [
+            "PPG_mean",
+            "UNSUPPORTED_MODEL_FEATURE",
+            "EMG_consensus_WL_max",
+        ],
+    }
+    ranked = [
+        {"feature": "UNSUPPORTED_MODEL_FEATURE", "combined_score": 3.0},
+        {"feature": "EMG_consensus_WL_max", "combined_score": 2.0},
+        {"feature": "PPG_mean", "combined_score": 1.0},
+    ]
+
+    filtered_fs, filtered_ranked, report = s05.apply_deployable_feature_contract(fs, ranked)
+
+    assert filtered_fs["selected_features"] == ["PPG_mean", "EMG_consensus_WL_max"]
+    assert [r["feature"] for r in filtered_ranked] == ["EMG_consensus_WL_max", "PPG_mean"]
+    assert report["removed_selected_features"] == ["UNSUPPORTED_MODEL_FEATURE"]
+    assert report["removed_ranked_features"] == ["UNSUPPORTED_MODEL_FEATURE"]
+
+
+def test_s05_main_drops_non_deployable_features_from_legacy_artifacts():
+    out_dir = Path.cwd() / "test_outputs" / f"s05_deploy_contract_{uuid.uuid4().hex}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    y_train = np.array([0, 1, 0, 1, 0, 1, 0, 1])
+    y_valid = np.array([0, 1, 0, 1])
+    try:
+        train = pd.DataFrame({
+            "sample_name": [f"s{i // 2}" for i in range(len(y_train))],
+            "h5_file": ["a.h5"] * len(y_train),
+            "target": y_train,
+            "start_100hz": np.arange(len(y_train)) * 100,
+            "PPG_mean": y_train.astype(float) + np.linspace(0.0, 0.1, len(y_train)),
+            "EMG_consensus_WL_max": y_train.astype(float) * 2.0 + 0.1,
+            "UNSUPPORTED_MODEL_FEATURE": np.linspace(10.0, 20.0, len(y_train)),
+        })
+        valid = pd.DataFrame({
+            "sample_name": [f"v{i // 2}" for i in range(len(y_valid))],
+            "h5_file": ["b.h5"] * len(y_valid),
+            "target": y_valid,
+            "start_100hz": np.arange(len(y_valid)) * 100,
+            "PPG_mean": y_valid.astype(float) + np.linspace(0.0, 0.1, len(y_valid)),
+            "EMG_consensus_WL_max": y_valid.astype(float) * 2.0 + 0.1,
+            "UNSUPPORTED_MODEL_FEATURE": np.linspace(10.0, 20.0, len(y_valid)),
+        })
+        train.to_csv(out_dir / "feature_pool_train.csv", index=False)
+        valid.to_csv(out_dir / "feature_pool_valid.csv", index=False)
+        (out_dir / "splits.json").write_text("{}", encoding="utf-8")
+        (out_dir / "selected_features.json").write_text(json.dumps({
+            "selected_features": [
+                "PPG_mean",
+                "UNSUPPORTED_MODEL_FEATURE",
+                "EMG_consensus_WL_max",
+            ],
+            "selection_policy": {"selection_data": "test_fixture"},
+        }), encoding="utf-8")
+        (out_dir / "ranked_features.json").write_text(json.dumps([
+            {"feature": "UNSUPPORTED_MODEL_FEATURE", "combined_score": 3.0},
+            {"feature": "EMG_consensus_WL_max", "combined_score": 2.0},
+            {"feature": "PPG_mean", "combined_score": 1.0},
+        ]), encoding="utf-8")
+
+        s05.main(SimpleNamespace(
+            artifact_dir=str(out_dir),
+            threshold_objective="f1",
+            threshold_beta=0.5,
+            threshold_min_precision=0.95,
+            max_features=None,
+            model_search=False,
+            max_model_nodes=500,
+            model_search_feature_counts="",
+            model_search_strategy="staged_group_cv",
+            model_search_accuracy_tolerance=0.0,
+            ood_q_low=0.05,
+            ood_q_high=0.95,
+            target_deploy_ratio=None,
+            legacy_scale_pos_weight=False,
+        ))
+
+        bundle = joblib.load(out_dir / "model_bundle.pkl")
+
+        assert bundle["feature_names"] == ["EMG_consensus_WL_max", "PPG_mean"]
+        assert "UNSUPPORTED_MODEL_FEATURE" not in bundle["feature_names"]
+        assert bundle["deployable_feature_contract"]["removed_selected_features"] == [
+            "UNSUPPORTED_MODEL_FEATURE"
+        ]
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
 
 
 def test_group_cv_search_summary_uses_train_group_cv_and_keeps_valid_out(monkeypatch):

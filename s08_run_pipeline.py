@@ -238,7 +238,7 @@ def _build_feature_code_map():
         "EMG0_POW_20_60": "emg0_freq[4]", "EMG0_POW_60_150": "emg0_freq[5]",
         "EMG0_POW_150_450": "emg0_freq[6]", "EMG0_POW_LH_RATIO": "emg0_freq[7]",
         "EMG0_SE95": "emg0_freq[8]",
-        "EMG0_SampEn": "_sample_entropy(emg0_bp) if emg0_bp is not None else 0.0",
+        "EMG0_SampEn": "_emg_sample_entropy(emg0_bp, fs_emg) if emg0_bp is not None else 0.0",
         "EMG0_SKEWNESS": "float(np.mean((emg0_bp-np.mean(emg0_bp))**3)/(np.std(emg0_bp)**3+EPS)) if emg0_bp is not None else 0.0",
         "EMG0_KURTOSIS": "float(np.mean((emg0_bp-np.mean(emg0_bp))**4)/(np.std(emg0_bp)**4+EPS)) if emg0_bp is not None else 0.0",
         "EMG0_SNR": "_safe_div(float(np.sqrt(np.mean(emg0_bp**2))), float(np.mean(np.abs(emg0_env))+EPS)) if emg0_bp is not None else 0.0",
@@ -258,12 +258,12 @@ def _build_feature_code_map():
         "EMG1_POW_20_60": "emg1_freq[4]", "EMG1_POW_60_150": "emg1_freq[5]",
         "EMG1_POW_150_450": "emg1_freq[6]", "EMG1_POW_LH_RATIO": "emg1_freq[7]",
         "EMG1_SE95": "emg1_freq[8]",
-        "EMG1_SampEn": "_sample_entropy(emg1_bp) if emg1_bp is not None else 0.0",
+        "EMG1_SampEn": "_emg_sample_entropy(emg1_bp, fs_emg) if emg1_bp is not None else 0.0",
         "EMG1_SKEWNESS": "float(np.mean((emg1_bp-np.mean(emg1_bp))**3)/(np.std(emg1_bp)**3+EPS)) if emg1_bp is not None else 0.0",
         "EMG1_KURTOSIS": "float(np.mean((emg1_bp-np.mean(emg1_bp))**4)/(np.std(emg1_bp)**4+EPS)) if emg1_bp is not None else 0.0",
         "EMG1_SNR": "_safe_div(float(np.sqrt(np.mean(emg1_bp**2))), float(np.mean(np.abs(emg1_env))+EPS)) if emg1_bp is not None else 0.0",
         # EMG cross
-        "EMG_CROSS_CORR": "_safe_corr(emg0_bp, emg1_bp) if emg0_bp is not None and emg1_bp is not None else 0.0",
+        "EMG_CROSS_CORR": "_safe_corr(emg0_bp, emg1_bp, winsorize=True) if emg0_bp is not None and emg1_bp is not None else 0.0",
         "EMG_RMS_RATIO": "_safe_div(float(np.sqrt(np.mean(emg0_bp**2))), float(np.sqrt(np.mean(emg1_bp**2)))) if emg0_bp is not None and emg1_bp is not None else 0.0",
         # ACC (gravity/motion separated)
         "ACC_GRAV_MAG_MEAN": "float(np.mean(grav_mag))",
@@ -276,11 +276,13 @@ def _build_feature_code_map():
         "ACC_STILL_SCORE": "float(1.0/(1.0+50.0*np.std(motion_mag)/(abs(np.mean(motion_mag))+1e-6)))",
         "ACC_MAG_P50": "float(np.percentile(acc_mag, 50)) if am else 0.0",
         "ACC_MAG_P90": "float(np.percentile(acc_mag, 90)) if am else 0.0",
+        "ACC_SAT_FRAC": "float(np.mean(np.abs(acc) >= 0.98 * (np.max(np.abs(acc)) + EPS))) if am else 0.0",
+        "ACC_CLIP_RATE": "float(np.mean(np.abs(np.diff(acc, axis=0)) < 1e-10)) if am and len(acc) > 1 else 0.0",
         # Cross-modal
-        "ACC_PPG_BP_CORR": "abs(_safe_corr(ambp, ppg_bp)) if ambp is not None else 0.0",
-        "ACC_EMG_CORR": "abs(_safe_corr(acc_mag, emg0_env_ds)) if am and emg0_env_ds is not None else 0.0",
-        "EMG_PPG_CORR": "abs(_safe_corr(emg0_env_ds, ppg_bp)) if emg0_env_ds is not None else 0.0",
-        "EMG_PPG_ENV_CORR": "abs(_safe_corr(emg0_env_smooth_ds, ppg_env)) if emg0_env_smooth_ds is not None else 0.0",
+        "ACC_PPG_BP_CORR": "abs(_safe_corr(ambp, ppg_bp, winsorize=True)) if ambp is not None else 0.0",
+        "ACC_EMG_CORR": "abs(_safe_corr(acc_mag, emg0_env_ds, winsorize=True)) if am and emg0_env_ds is not None else 0.0",
+        "EMG_PPG_CORR": "abs(_safe_corr(emg0_env_ds, ppg_bp, winsorize=True)) if emg0_env_ds is not None else 0.0",
+        "EMG_PPG_ENV_CORR": "abs(_safe_corr(emg0_env_smooth_ds, ppg_env, winsorize=True)) if emg0_env_smooth_ds is not None else 0.0",
         # Meta
         "SIG_LEN": "float(len(ppg))",
         "SIG_SEC": "float(len(ppg)/fs)",
@@ -314,8 +316,8 @@ def _build_feature_code_map():
         "EMG1_LEAK_MAX_RATIO": "float(np.max(emg1_leak)) if emg1_leak_ref is not None else 0.0",
         "EMG1_LEAK_MAX_FREQ": "float([100,150,200,250,300][int(np.argmax(emg1_leak))]) if emg1_leak_ref is not None else 0.0",
         # ACC tremor
-        "ACC_TREMOR_POW_8_12": "float(np.log1p(_band_power(acc_mag - np.mean(acc_mag), 8, 12, fs))) if am else 0.0",
-        "ACC_TREMOR_RATIO": "(_band_power(acc_mag - np.mean(acc_mag), 8, 12, fs) / (_band_power(acc_mag - np.mean(acc_mag), 0.5, 15, fs) + EPS)) if am else 0.0",
+        "ACC_TREMOR_POW_8_12": "acc_tremor[0]",
+        "ACC_TREMOR_RATIO": "acc_tremor[1]",
         # PPG PI
         "PPG_PI": "_safe_div(float(np.sqrt(np.mean(ppg_bp**2))), abs(float(np.median(ppg_raw))))",
         "PPG_PI_SUBWIN_IQR": "ppg_pi_sub_iqr",
@@ -350,6 +352,36 @@ def _build_feature_code_map():
         "PPG_corr_mean_vmag": "_safe_corr(ir, vmag)",
         "PPG_corr_IR_imbalance": "_safe_corr(ir, imb)",
     }
+    # Consensus features are generated in s03 from EMG0/EMG1 pairs; keep the
+    # deploy formula table programmatic so min/max/range/cv cannot drift apart.
+    emg_consensus_sources = {
+        "RMS": (
+            "float(np.sqrt(np.mean(emg0_bp**2))) if emg0_bp is not None else 0.0",
+            "float(np.sqrt(np.mean(emg1_bp**2))) if emg1_bp is not None else 0.0",
+        ),
+        "MAV": (
+            "float(np.mean(emg0_env)) if emg0_env is not None else 0.0",
+            "float(np.mean(emg1_env)) if emg1_env is not None else 0.0",
+        ),
+        "WL": (
+            "float(np.sum(np.abs(np.diff(emg0_bp)))) if emg0_bp is not None else 0.0",
+            "float(np.sum(np.abs(np.diff(emg1_bp)))) if emg1_bp is not None else 0.0",
+        ),
+        "ZC": (
+            "float(np.sum(np.abs(np.diff(np.sign(emg0_bp))))/(2.0*len(emg0_bp))) if emg0_bp is not None else 0.0",
+            "float(np.sum(np.abs(np.diff(np.sign(emg1_bp))))/(2.0*len(emg1_bp))) if emg1_bp is not None else 0.0",
+        ),
+        "MNF": ("emg0_freq[0]", "emg1_freq[0]"),
+        "MDF": ("emg0_freq[1]", "emg1_freq[1]"),
+        "PKF": ("emg0_freq[2]", "emg1_freq[2]"),
+        "PSR": ("emg0_freq[3]", "emg1_freq[3]"),
+    }
+    for base, (v0, v1) in emg_consensus_sources.items():
+        arr = f"np.array([{v0}, {v1}], dtype=np.float64)"
+        FC[f"EMG_consensus_{base}_min"] = f"float(np.min({arr}))"
+        FC[f"EMG_consensus_{base}_max"] = f"float(np.max({arr}))"
+        FC[f"EMG_consensus_{base}_range"] = f"float(np.max({arr}) - np.min({arr}))"
+        FC[f"EMG_consensus_{base}_cv"] = f"float(np.std({arr}) / (np.mean(np.abs({arr})) + EPS))"
     return FC
 
 
@@ -384,11 +416,16 @@ def _robust_iqr(x):
     q75, q25 = np.percentile(x, [75, 25])
     return float(q75 - q25)
 
-def _safe_corr(x, y):
+def _safe_corr(x, y, winsorize=False):
     n = min(len(x), len(y))
     if n < 8:
         return 0.0
-    x, y = x[:n] - np.mean(x[:n]), y[:n] - np.mean(y[:n])
+    x = np.asarray(x[:n], dtype=np.float64)
+    y = np.asarray(y[:n], dtype=np.float64)
+    if winsorize:
+        x = np.clip(x, np.percentile(x, 5), np.percentile(x, 95))
+        y = np.clip(y, np.percentile(y, 5), np.percentile(y, 95))
+    x, y = x - np.mean(x), y - np.mean(y)
     sx, sy = np.std(x), np.std(y)
     if sx < EPS or sy < EPS:
         return 0.0
@@ -501,6 +538,24 @@ def _sample_entropy(bp, m=2, r_ratio=0.2):
     if Bm1 <= EPS or Bm <= EPS:
         return 0.0
     return float(-np.log(Bm1 / Bm))
+
+def _emg_downsample_for_sampen(x, fs=1000.0):
+    x = np.asarray(x, dtype=np.float64)
+    if len(x) < 50:
+        return None
+    if fs > 250 and len(x) > 250:
+        gcd = np.gcd(int(fs), 250)
+        up = 250 // gcd
+        down = int(fs) // gcd
+        x = _resample_poly(x, up, down)
+    if len(x) > 1200:
+        start = (len(x) - 1200) // 2
+        x = x[start:start + 1200]
+    return x
+
+def _emg_sample_entropy(bp, fs=1000.0):
+    ds = _emg_downsample_for_sampen(bp, fs)
+    return _sample_entropy(ds) if ds is not None else 0.0
 
 def _smooth_envelope(x, fs=25, win_sec=0.25):
     x = np.abs(x)
@@ -677,23 +732,44 @@ def _preprocess_emg(x, fs=1000):
 
 
 def _band_power(x, low, high, fs):
-    """Welch 功率谱密度中指定频段的总能量（与 s03 _emg_welch_spectrum 一致）。"""
-    if x is None or len(x) < 16:
+    """EMG Welch power over the 20-450Hz training spectrum."""
+    if x is None:
         return 0.0
     x = np.asarray(x, dtype=np.float64)
+    nperseg = 1024
+    if len(x) < nperseg:
+        return 0.0
     try:
         from scipy.signal import welch
-        nperseg = min(1024, len(x) // 2)
-        if nperseg < 16:
-            return 0.0
         noverlap = nperseg // 2
         f, Pxx = welch(x, fs=fs, nperseg=nperseg, noverlap=noverlap)
     except Exception:
         return 0.0
+    train_mask = (f >= 20.0) & (f <= 450.0)
+    if not np.any(train_mask) or np.sum(Pxx[train_mask]) < EPS:
+        return 0.0
+    f = f[train_mask]
+    Pxx = Pxx[train_mask]
     mask = (f >= low) & (f <= high)
     if not np.any(mask):
         return 0.0
     return float(np.sum(Pxx[mask]))
+
+def _acc_tremor_features(acc_mag, fs=100.0):
+    if acc_mag is None or len(acc_mag) < 16:
+        return 0.0, 0.0
+    x = np.asarray(acc_mag, dtype=np.float64)
+    x = x - np.mean(x)
+    nfft = 1
+    while nfft < len(x):
+        nfft <<= 1
+    nfft = max(256, nfft)
+    spec = np.abs(np.fft.rfft(x * np.hamming(len(x)), n=nfft))
+    spec_sq = spec * spec
+    freqs = np.fft.rfftfreq(nfft, d=1.0 / fs)
+    p_tremor = float(np.sum(spec_sq[(freqs >= 8.0) & (freqs <= 12.0)]))
+    p_total = float(np.sum(spec_sq[(freqs >= 0.5) & (freqs <= 15.0)])) + EPS
+    return float(np.log1p(p_tremor)), float(p_tremor / p_total)
 
 
 def _welch_coherence(x, y, fs, nperseg=None):
@@ -925,6 +1001,7 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
     ppg_peaks = _detect_ppg_peaks(ppg_bp, fs)
     ppg_dicr, ppg_aug, ppg_pw_cv = _ppg_morphology_stats(ppg_bp, ppg_peaks, fs)
     ppg_rmssd, ppg_cv, ppg_pnn30 = _ppg_hrv_stats(ppg_peaks, fs)
+    acc_tremor = _acc_tremor_features(acc_mag, fs) if am else (0.0, 0.0)
     acc_coh_micro, acc_coh_hr = _acc_ppg_coherence(acc_mag, ppg_bp, fs_acc=fs, fs_ppg=fs)
 
     # PPG PI sub-window IQR
