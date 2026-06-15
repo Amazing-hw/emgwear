@@ -67,10 +67,10 @@ def build_pipeline_commands(args):
             f' --model_search'
             f' --max_model_nodes {_arg(args, "max_model_nodes", 500)}'
             f' --model_search_strategy {_arg(args, "model_search_strategy", "staged_group_cv")}'
-            f' --model_search_max_candidates {_arg(args, "model_search_max_candidates", 600)}'
-            f' --model_search_stage2_top_k {_arg(args, "model_search_stage2_top_k", 80)}'
+            f' --model_search_max_candidates {_arg(args, "model_search_max_candidates", 300)}'
+            f' --model_search_stage2_top_k {_arg(args, "model_search_stage2_top_k", 40)}'
             f' --model_search_cv_folds {_arg(args, "model_search_cv_folds", 3)}'
-            f' --model_search_cv_repeats {_arg(args, "model_search_cv_repeats", 2)}'
+            f' --model_search_cv_repeats {_arg(args, "model_search_cv_repeats", 1)}'
             f' --model_search_random_state {_arg(args, "model_search_random_state", 42)}'
             f' --model_search_accuracy_tolerance {_arg(args, "model_search_accuracy_tolerance", 0.0)}'
             f' --model_search_stage1_top_k {_arg(args, "model_search_stage1_top_k", 4)}'
@@ -94,7 +94,7 @@ def build_pipeline_commands(args):
         's05': f'"{PYTHON}" "{_script_path("s05_train_final_model")}" --artifact_dir "{args.artifact_dir}"{s05_extra}',
         's06_opt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --optimize --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_cache_valid': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_window_cache --window_output_root window_outputs',
-        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --split valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 4.0)}',
+        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --split valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 1.5)}',
         's06_eval': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_xpt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_deploy',
         's06_feat': '__extractor__',
@@ -1335,10 +1335,10 @@ def main():
     p.add_argument('--max_model_nodes', type=int, default=500)
     p.add_argument('--model_search_strategy', default='staged_group_cv',
                    choices=['staged_group_cv', 'staged_valid'])
-    p.add_argument('--model_search_max_candidates', type=int, default=600)
-    p.add_argument('--model_search_stage2_top_k', type=int, default=80)
+    p.add_argument('--model_search_max_candidates', type=int, default=300)
+    p.add_argument('--model_search_stage2_top_k', type=int, default=40)
     p.add_argument('--model_search_cv_folds', type=int, default=3)
-    p.add_argument('--model_search_cv_repeats', type=int, default=2)
+    p.add_argument('--model_search_cv_repeats', type=int, default=1)
     p.add_argument('--model_search_random_state', type=int, default=42)
     p.add_argument('--model_search_accuracy_tolerance', type=float, default=0.0)
     p.add_argument('--model_search_stage1_top_k', type=int, default=4)
@@ -1356,7 +1356,7 @@ def main():
                    help='导出 valid NPZ 缓存，供 s07 后处理搜参使用')
     p.add_argument('--optimize_postprocess', action=argparse.BooleanOptionalAction, default=False,
                    help='运行 s07 FP 敏感后处理搜参')
-    p.add_argument('--postprocess_fp_cost', type=float, default=4.0,
+    p.add_argument('--postprocess_fp_cost', type=float, default=1.5,
                    help='s07 sample false-positive cost')
     p.add_argument('--split', default='test', choices=['train', 'valid', 'test'],
                    help='s06 评估用的数据 split')

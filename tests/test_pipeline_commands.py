@@ -63,10 +63,10 @@ def test_pipeline_commands_enable_model_search_by_default():
     assert "--model_search" in cmd
     assert "--max_features 15" in cmd
     assert "--model_search_strategy staged_group_cv" in cmd
-    assert "--model_search_max_candidates 600" in cmd
-    assert "--model_search_stage2_top_k 80" in cmd
+    assert "--model_search_max_candidates 300" in cmd
+    assert "--model_search_stage2_top_k 40" in cmd
     assert "--model_search_cv_folds 3" in cmd
-    assert "--model_search_cv_repeats 2" in cmd
+    assert "--model_search_cv_repeats 1" in cmd
     assert "--model_search_random_state 42" in cmd
 
 

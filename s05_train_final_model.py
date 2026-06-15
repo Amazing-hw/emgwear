@@ -1404,8 +1404,8 @@ def main(args=None):
     parser.add_argument("--model_search_size_cost", type=float, default=0.1)
     parser.add_argument("--model_search_strategy", type=str, default="staged_group_cv",
                         choices=["staged_group_cv", "staged_valid"])
-    parser.add_argument("--model_search_max_candidates", type=int, default=600)
-    parser.add_argument("--model_search_stage2_top_k", type=int, default=80)
+    parser.add_argument("--model_search_max_candidates", type=int, default=300)
+    parser.add_argument("--model_search_stage2_top_k", type=int, default=40)
     parser.add_argument("--model_search_cv_folds", type=int, default=3)
     parser.add_argument("--model_search_cv_repeats", type=int, default=2)
     parser.add_argument("--model_search_random_state", type=int, default=42)

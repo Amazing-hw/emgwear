@@ -180,7 +180,7 @@ def evaluate_params(caches, params, skip_initial_windows=0):
     }
 
 
-def score_metrics(metrics, fp_cost=4.0):
+def score_metrics(metrics, fp_cost=1.5):
     return (
         metrics["accuracy"]
         + 0.35 * metrics["recall"]
@@ -189,7 +189,7 @@ def score_metrics(metrics, fp_cost=4.0):
     )
 
 
-def search_postprocess(caches, fp_cost=4.0, skip_initial_windows=0, n_workers=None):
+def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=None):
     grid = list(iter_param_grid())
     n_workers = max(1, int(n_workers or 1))
 
