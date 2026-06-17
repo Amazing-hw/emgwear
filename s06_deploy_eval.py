@@ -1511,15 +1511,11 @@ def export_deploy_artifacts(artifact_dir):
 
     stage1_path = _os.path.join(artifact_dir, "stage1_threshold.json")
     bundle_path = _os.path.join(artifact_dir, "model_bundle.pkl")
-    features_path = _os.path.join(artifact_dir, "selected_features.json")
     config_path = _os.path.join(artifact_dir, "final_model_config.json")
 
     with open(stage1_path, "r", encoding="utf-8") as f:
         stage1 = json.load(f)
     bundle = joblib.load(bundle_path)
-    with open(features_path, "r", encoding="utf-8") as f:
-        features = json.load(f)
-
     postprocess_cfg = dict(DEFAULT_POSTPROCESS_CONFIG)
     if _os.path.exists(config_path):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -1527,7 +1523,7 @@ def export_deploy_artifacts(artifact_dir):
         if "postprocess" in fcfg:
             postprocess_cfg.update(fcfg["postprocess"])
 
-    selected_features = features["selected_features"]
+    selected_features = list(bundle["feature_names"])
     model = bundle["model"]
     booster = model.get_booster()
 
