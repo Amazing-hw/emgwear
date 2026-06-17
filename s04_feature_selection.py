@@ -263,13 +263,15 @@ def fast_group_preselection(df, feature_cols, group_limits=None, preselect_top=4
     selected = {}
     for group_name, features_in_group in group_features.items():
         n_feat = len(features_in_group)
+        limit = group_limits.get(group_name, 1)
+        if limit <= 0:
+            continue
         # 特征数 ≤3 的小组跳过预筛，全部保留到稳定性选择阶段
         if n_feat <= 3:
             for f in features_in_group:
                 selected[f] = {"group": group_name, "importance": 1.0, "method": "tiny_group_pass"}
             continue
 
-        limit = group_limits.get(group_name, 1)
         actual_select = min(preselect_top, n_feat, max(limit * 2, 4))
         print(f"  [{group_name}] {n_feat} features, top {actual_select}...",
               end="", flush=True)
@@ -887,6 +889,16 @@ def _supplement_group(selected, group_count, summary, group_name, min_count, max
     return selected, group_count
 
 
+def filter_summary_by_group_limits(summary, group_limits=None):
+    """Return ranked feature summary entries whose groups are enabled."""
+    if group_limits is None:
+        group_limits = GROUP_LIMITS_DEFAULT
+    return [
+        item for item in summary
+        if int(group_limits.get(item.get("group", "other"), 1)) > 0
+    ]
+
+
 def _select_by_group_impl(summary, max_features=15, group_limits=None,
                            min_acc_features=1,
                            min_anti_spoof_features=MIN_ANTI_SPOOF_FEATURES_DEFAULT):
@@ -910,7 +922,8 @@ def _select_by_group_impl(summary, max_features=15, group_limits=None,
 
     # ACC 兜底（保持原有逻辑）
     acc_selected = [f for f in selected if f in FEATURE_GROUPS.get("acc_features", [])]
-    if len(acc_selected) < min_acc_features and min_acc_features > 0:
+    if (group_limits.get("acc_features", 1) > 0
+            and len(acc_selected) < min_acc_features and min_acc_features > 0):
         acc_candidates = [item["feature"] for item in summary
                           if item["group"] == "acc_features"]
         for f in acc_candidates:
@@ -920,9 +933,10 @@ def _select_by_group_impl(summary, max_features=15, group_limits=None,
                 break
 
     # 防伪兜底：训练数据无伪造标签时这些特征 importance 通常不高，必须强制保留 ≥N 个
-    selected, group_count = _supplement_group(
-        selected, dict(group_count), summary, "anti_spoof",
-        min_anti_spoof_features, max_features)
+    if group_limits.get("anti_spoof", 1) > 0:
+        selected, group_count = _supplement_group(
+            selected, dict(group_count), summary, "anti_spoof",
+            min_anti_spoof_features, max_features)
 
     return selected, dict(group_count)
 
@@ -1122,7 +1136,10 @@ def main(args=None):
         json.dump(result, f, indent=2, ensure_ascii=False)
 
     # 输出完整排序列表（供 s05 搜参时测试不同 max_features）
-    ranked = sorted(combined_summary, key=lambda x: x["combined_score"], reverse=True)
+    ranked = sorted(
+        filter_summary_by_group_limits(combined_summary, GROUP_LIMITS_DEFAULT),
+        key=lambda x: x["combined_score"], reverse=True,
+    )
     ranked_path = os.path.join(args.artifact_dir, "ranked_features.json")
     with open(ranked_path, "w", encoding="utf-8") as f:
         json.dump([{

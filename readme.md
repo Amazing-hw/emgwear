@@ -18,7 +18,7 @@
 # 默认流程（不含后处理搜参）
 python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts
 
-# 完整流程（含 NPZ 缓存 + 后处理状态机搜参）
+# 推荐完整流程（窗口准确率优先 + NPZ 缓存 + 后处理状态机搜参）
 python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess
 ```
 
@@ -263,13 +263,20 @@ emg_bp_clean:
   默认 staged_group_cv。
   含义是先从高预算细粒度空间确定性采样候选，再用 train 内部 group-aware repeated CV 复评。
 
+--search_budget
+  模型搜索预算预设。
+  fast: max_candidates=150, stage2_top_k=20, cv_repeats=1，适合快速验证链路。
+  balanced: max_candidates=300, stage2_top_k=40, cv_repeats=1，默认设置，控制运行时间。
+  accuracy: max_candidates=600, stage2_top_k=80, cv_repeats=1，放宽搜索空间但不增加 CV 重复次数。
+  手动传入 --model_search_max_candidates / --model_search_stage2_top_k / --model_search_cv_repeats 会覆盖预设值。
+
 --model_search_max_candidates
   Stage A 最多采样多少个候选。
-  默认 600。
+  默认由 --search_budget balanced 给出，即 300。
 
 --model_search_stage2_top_k
   Stage B 进入 group CV 复评的候选数。
-  默认 80。
+  默认由 --search_budget balanced 给出，即 40。
 
 --model_search_cv_folds
   group CV 折数。
@@ -277,7 +284,7 @@ emg_bp_clean:
 
 --model_search_cv_repeats
   group CV 重复次数。
-  默认 2。
+  默认由 --search_budget balanced 给出，即 1。
 
 --model_search_random_state
   候选采样和 CV 分组的随机种子。
@@ -286,6 +293,11 @@ emg_bp_clean:
 --model_search_accuracy_tolerance
   CV mean accuracy 容忍范围。
   默认 0.0，不主动牺牲 accuracy 换更小模型。
+
+--accuracy_first_optimize
+  使用窗口准确率优先的 s05 搜索预设。
+  会把 model_search_accuracy_tolerance、model_search_fp_cost、model_search_size_cost 固定为 0.0。
+  --with_postprocess 会自动启用该预设；后处理端到端取舍由 s07 的 --postprocess_fp_cost 独立控制。
 
 --model_search_stage1_top_k
   两阶段模型搜索中，第一阶段保留多少个结构组合进入第二阶段细搜。
@@ -351,11 +363,12 @@ emg_bp_clean:
   默认关闭。
 
 --with_postprocess
-  等效于 --export_window_cache --optimize_postprocess，一条命令启用完整后处理搜参。
+  等效于 --accuracy_first_optimize --export_window_cache --optimize_postprocess。
+  推荐用于最终训练/评估：先让 Stage2 模型按窗口准确率优先选择，再用 s07 显式搜索端到端后处理参数。
 
 --postprocess_fp_cost
   s07 假阳性惩罚权重。
-  默认 4.0。越大越倾向于减少负样本误判为正。
+  默认 1.5。越大越倾向于减少负样本误判为正。
 
 --split
   s06 评估用的数据 split。
@@ -824,11 +837,11 @@ python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifact
 python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --model_search_feature_counts "8,10,12,15"
 ```
 
-完整流程（含 NPZ 缓存 + 后处理状态机搜参），一条命令：
+推荐完整流程（窗口准确率优先 + NPZ 缓存 + 后处理状态机搜参），一条命令：
 
 ```bash
 python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess
-# 等效于: --export_window_cache --optimize_postprocess
+# 等效于: --accuracy_first_optimize --export_window_cache --optimize_postprocess
 ```
 
 跳过某些步骤（复用已有产物）：
@@ -864,7 +877,13 @@ python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifact
 如果默认模型搜索太慢：
 
 ```bash
-python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --model_search_max_candidates 300 --model_search_stage2_top_k 40
+python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --search_budget fast
+```
+
+如果希望放宽搜索空间但仍控制运行时间：
+
+```bash
+python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess --search_budget accuracy
 ```
 
 如果需要手动分步做后处理搜参（等价于 `--with_postprocess`）：

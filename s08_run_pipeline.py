@@ -35,6 +35,24 @@ from datetime import timedelta
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PYTHON = sys.executable
 
+SEARCH_BUDGET_PRESETS = {
+    "fast": {
+        "model_search_max_candidates": 150,
+        "model_search_stage2_top_k": 20,
+        "model_search_cv_repeats": 1,
+    },
+    "balanced": {
+        "model_search_max_candidates": 300,
+        "model_search_stage2_top_k": 40,
+        "model_search_cv_repeats": 1,
+    },
+    "accuracy": {
+        "model_search_max_candidates": 600,
+        "model_search_stage2_top_k": 80,
+        "model_search_cv_repeats": 1,
+    },
+}
+
 
 def _arg(args, name, default):
     return getattr(args, name, default)
@@ -66,6 +84,8 @@ def build_pipeline_commands(args):
         s05_extra += (
             f' --model_search'
             f' --max_model_nodes {_arg(args, "max_model_nodes", 500)}'
+            f' --model_search_fp_cost {_arg(args, "model_search_fp_cost", 2.0)}'
+            f' --model_search_size_cost {_arg(args, "model_search_size_cost", 0.1)}'
             f' --model_search_strategy {_arg(args, "model_search_strategy", "staged_group_cv")}'
             f' --model_search_max_candidates {_arg(args, "model_search_max_candidates", 300)}'
             f' --model_search_stage2_top_k {_arg(args, "model_search_stage2_top_k", 40)}'
@@ -123,6 +143,27 @@ def _step_list():
 
 # backward compat: old test code references default_pipeline_steps
 default_pipeline_steps = _step_list
+
+
+def apply_pipeline_presets(args):
+    """Apply composite pipeline switches before command construction."""
+    budget = getattr(args, "search_budget", "balanced")
+    if budget not in SEARCH_BUDGET_PRESETS:
+        raise ValueError(
+            f"unknown search_budget={budget!r}; choose from: "
+            + ",".join(sorted(SEARCH_BUDGET_PRESETS))
+        )
+    for key, value in SEARCH_BUDGET_PRESETS[budget].items():
+        if not hasattr(args, key) or getattr(args, key) is None:
+            setattr(args, key, value)
+    if getattr(args, "with_postprocess", False):
+        args.export_window_cache = True
+        args.optimize_postprocess = True
+        args.accuracy_first_optimize = True
+    if getattr(args, "accuracy_first_optimize", False):
+        args.model_search_accuracy_tolerance = 0.0
+        args.model_search_fp_cost = 0.0
+        args.model_search_size_cost = 0.0
 
 
 def _load_eval_details(artifact_dir, split="test", method="state_machine"):
@@ -1335,12 +1376,17 @@ def main():
     p.add_argument('--max_model_nodes', type=int, default=500)
     p.add_argument('--model_search_strategy', default='staged_group_cv',
                    choices=['staged_group_cv', 'staged_valid'])
-    p.add_argument('--model_search_max_candidates', type=int, default=300)
-    p.add_argument('--model_search_stage2_top_k', type=int, default=40)
+    p.add_argument('--search_budget', default='balanced',
+                   choices=sorted(SEARCH_BUDGET_PRESETS),
+                   help='模型搜索预算: fast 更快, balanced 默认, accuracy 放宽候选但保持 CV repeats=1')
+    p.add_argument('--model_search_max_candidates', type=int, default=None)
+    p.add_argument('--model_search_stage2_top_k', type=int, default=None)
     p.add_argument('--model_search_cv_folds', type=int, default=3)
-    p.add_argument('--model_search_cv_repeats', type=int, default=1)
+    p.add_argument('--model_search_cv_repeats', type=int, default=None)
     p.add_argument('--model_search_random_state', type=int, default=42)
     p.add_argument('--model_search_accuracy_tolerance', type=float, default=0.0)
+    p.add_argument('--model_search_fp_cost', type=float, default=2.0)
+    p.add_argument('--model_search_size_cost', type=float, default=0.1)
     p.add_argument('--model_search_stage1_top_k', type=int, default=4)
     p.add_argument('--model_search_n_estimators', default='20,25,30,35,40,45,50,55,60')
     p.add_argument('--model_search_max_depth', default='2,3,4')
@@ -1362,6 +1408,8 @@ def main():
                    help='s06 评估用的数据 split')
     p.add_argument('--model_search_feature_counts', type=str, default='',
                    help='搜参时测试的特征数量，逗号分隔 (如 8,10,12,15)。留空则用 --max_features')
+    p.add_argument('--accuracy_first_optimize', action=argparse.BooleanOptionalAction, default=False,
+                   help='使用窗口准确率优先的 s05 搜索预设')
 
     # ── 向后兼容: --with_postprocess ──
     p.add_argument('--with_postprocess', action='store_true',
@@ -1380,9 +1428,7 @@ def main():
         sys.exit(2)
 
     # ── 自动启用可选步骤 ──
-    if args.with_postprocess:
-        args.export_window_cache = True
-        args.optimize_postprocess = True
+    apply_pipeline_presets(args)
     if stop_after in {'s06_cache_valid', 's07_post'}:
         if 's06_cache_valid' not in skip_set:
             args.export_window_cache = True

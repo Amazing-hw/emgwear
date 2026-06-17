@@ -80,3 +80,55 @@ def test_get_feature_cols_excludes_features_without_deploy_formula():
 
     assert "PPG_mean" in cols
     assert "UNSUPPORTED_MODEL_FEATURE" not in cols
+
+
+def test_group_limit_zero_excludes_features_from_selection_and_ranked_candidates():
+    import s04_feature_selection as s04
+
+    summary = [
+        {"feature": "ACC_MOTION_RMS", "group": "acc_features", "combined_score": 0.99},
+        {"feature": "PPG_DICROTIC_RATIO", "group": "anti_spoof", "combined_score": 0.98},
+        {"feature": "PPG_ch_vmag_mean", "group": "ppg_spatial", "combined_score": 0.97},
+        {"feature": "PPG_mean", "group": "ppg_quality", "combined_score": 0.50},
+        {"feature": "EMG0_MAV", "group": "emg_contact", "combined_score": 0.40},
+    ]
+    limits = dict(s04.GROUP_LIMITS_DEFAULT)
+    limits["acc_features"] = 0
+    limits["anti_spoof"] = 0
+    limits["ppg_spatial"] = 0
+
+    selected, group_count = s04.select_by_group_from_combined(
+        summary,
+        max_features=5,
+        group_limits=limits,
+        min_acc_features=1,
+        min_anti_spoof_features=3,
+    )
+    ranked = s04.filter_summary_by_group_limits(summary, limits)
+
+    assert selected == ["PPG_mean", "EMG0_MAV"]
+    assert group_count == {"ppg_quality": 1, "emg_contact": 1}
+    assert [item["feature"] for item in ranked] == ["PPG_mean", "EMG0_MAV"]
+
+
+def test_fast_group_preselection_skips_zero_limit_tiny_groups():
+    import s04_feature_selection as s04
+
+    df = pd.DataFrame({
+        "target": [0, 1, 0, 1],
+        "PPG_mean": [1.0, 2.0, 1.1, 2.1],
+        "PPG_std": [0.1, 0.2, 0.1, 0.2],
+        "EMG0_MAV": [0.0, 1.0, 0.0, 1.0],
+    })
+    limits = dict(s04.GROUP_LIMITS_DEFAULT)
+    limits["ppg_quality"] = 0
+
+    selected = s04.fast_group_preselection(
+        df,
+        ["PPG_mean", "PPG_std", "EMG0_MAV"],
+        group_limits=limits,
+    )
+
+    assert "PPG_mean" not in selected
+    assert "PPG_std" not in selected
+    assert "EMG0_MAV" in selected

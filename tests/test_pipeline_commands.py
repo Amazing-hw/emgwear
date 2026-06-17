@@ -21,12 +21,22 @@ class FakeBooster:
     def save_config(self):
         return "{}"
 
+    def get_dump(self, with_stats=False):
+        return ["0:leaf=0"]
+
+    def trees_to_data_frame(self):
+        import pandas as pd
+        return pd.DataFrame([{"Tree": 0, "Node": 0, "Feature": "Leaf"}])
+
 
 class FakeModel:
     n_estimators = 3
 
     def get_booster(self):
         return FakeBooster()
+
+    def get_params(self):
+        return {"n_estimators": self.n_estimators}
 
 
 def test_pipeline_commands_include_npz_cache_postprocess_path():
@@ -68,6 +78,72 @@ def test_pipeline_commands_enable_model_search_by_default():
     assert "--model_search_cv_folds 3" in cmd
     assert "--model_search_cv_repeats 1" in cmd
     assert "--model_search_random_state 42" in cmd
+
+
+def test_with_postprocess_enables_accuracy_first_model_search_preset():
+    args = SimpleNamespace(
+        dataset_dir="dataset",
+        artifact_dir="artifacts",
+        n_workers=2,
+        max_features=15,
+        window_sec=3,
+        stride_sec=1,
+        with_postprocess=True,
+        export_window_cache=False,
+        optimize_postprocess=False,
+        accuracy_first_optimize=False,
+        model_search_accuracy_tolerance=0.01,
+        model_search_fp_cost=2.0,
+        model_search_size_cost=0.1,
+    )
+
+    s08.apply_pipeline_presets(args)
+    cmd = s08.build_pipeline_commands(args)["s05"]
+
+    assert args.export_window_cache is True
+    assert args.optimize_postprocess is True
+    assert args.accuracy_first_optimize is True
+    assert "--model_search_accuracy_tolerance 0.0" in cmd
+    assert "--model_search_fp_cost 0.0" in cmd
+    assert "--model_search_size_cost 0.0" in cmd
+
+
+def test_accuracy_search_budget_expands_candidates_without_extra_cv_repeats():
+    args = SimpleNamespace(
+        dataset_dir="dataset",
+        artifact_dir="artifacts",
+        n_workers=2,
+        max_features=15,
+        window_sec=3,
+        stride_sec=1,
+        search_budget="accuracy",
+    )
+
+    s08.apply_pipeline_presets(args)
+    cmd = s08.build_pipeline_commands(args)["s05"]
+
+    assert "--model_search_max_candidates 600" in cmd
+    assert "--model_search_stage2_top_k 80" in cmd
+    assert "--model_search_cv_repeats 1" in cmd
+
+
+def test_fast_search_budget_reduces_candidates_for_short_runs():
+    args = SimpleNamespace(
+        dataset_dir="dataset",
+        artifact_dir="artifacts",
+        n_workers=2,
+        max_features=15,
+        window_sec=3,
+        stride_sec=1,
+        search_budget="fast",
+    )
+
+    s08.apply_pipeline_presets(args)
+    cmd = s08.build_pipeline_commands(args)["s05"]
+
+    assert "--model_search_max_candidates 150" in cmd
+    assert "--model_search_stage2_top_k 20" in cmd
+    assert "--model_search_cv_repeats 1" in cmd
 
 
 def test_default_pipeline_steps_skip_postprocess_search_before_final_eval():
@@ -324,3 +400,4 @@ def test_deploy_cookbook_uses_current_postprocess_and_clip_bounds():
             out_dir.parent.rmdir()
         except OSError:
             pass
+
