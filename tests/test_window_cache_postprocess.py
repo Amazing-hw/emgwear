@@ -270,6 +270,18 @@ def test_deploy_feature_formula_map_documents_consensus_and_acc_features():
         assert info["category"] != "unknown"
 
 
+def test_deploy_feature_formula_map_documents_ppg_spatial_features():
+    formulas = s06.build_feature_formula_map([
+        "PPG_ch_vmag_mean",
+        "PPG_ch_bp_corr_mean",
+        "PPG_corr_mean_vmag",
+    ])
+
+    for info in formulas.values():
+        assert "未匹配" not in info["formula"]
+        assert info["category"] == "ppg_spatial"
+
+
 def test_validate_feature_formula_map_rejects_unmatched_formula():
     formulas = s06.build_feature_formula_map(["FEATURE_WITHOUT_FORMULA"])
 

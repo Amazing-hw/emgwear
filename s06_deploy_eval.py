@@ -1321,6 +1321,27 @@ def build_feature_formula_map(selected_features):
         ("PPG_RR_PNN30",        "mean(|diff(RR)| > 0.030) — 相邻 RR 差超 30ms 的比例"),
     ])
 
+    PPG_SPATIAL = OrderedDict([
+        ("PPG_ch_imbalance_mean", "mean(std(ppg_3ch, axis=channel) / (abs(mean(ppg_3ch, axis=channel)) + eps))"),
+        ("PPG_ch_imbalance_p90", "percentile(channel_imbalance, 90)"),
+        ("PPG_ch_imbalance_iqr", "robust_iqr(channel_imbalance)"),
+        ("PPG_ch_rangeNorm_mean", "mean((max(ppg_3ch)-min(ppg_3ch)) / (abs(mean(ppg_3ch)) + eps) per sample)"),
+        ("PPG_ch_rangeNorm_p90", "percentile(channel_range_norm, 90)"),
+        ("PPG_ch_vmag_mean", "mean(sqrt(vx^2+vy^2)/(abs(channel_mean)+eps)), vx=ch0-0.5*(ch1+ch2), vy=sqrt(3)/2*(ch1-ch2)"),
+        ("PPG_ch_vmag_p90", "percentile(channel_vector_magnitude, 90)"),
+        ("PPG_ch_vmag_iqr", "robust_iqr(channel_vector_magnitude)"),
+        ("PPG_ch_vmag_std", "std(channel_vector_magnitude)"),
+        ("PPG_ch_dc_cv", "std(median(ppg_ch_i)) / (abs(mean(median(ppg_ch_i))) + eps)"),
+        ("PPG_ch_dc_max_min_ratio", "max(abs(median(ppg_ch_i))) / (min(abs(median(ppg_ch_i))) + eps)"),
+        ("PPG_ch_bp_corr_mean", "mean(pairwise safe_corr(ppg_bp_channel_i, ppg_bp_channel_j))"),
+        ("PPG_ch_bp_corr_min", "min(pairwise safe_corr(ppg_bp_channel_i, ppg_bp_channel_j))"),
+        ("PPG_ch_bp_corr_std", "std(pairwise safe_corr(ppg_bp_channel_i, ppg_bp_channel_j))"),
+        ("PPG_ch_bp_lag_std", "std(best_lag_samples(pairwise cross-correlation of bandpassed PPG channels))"),
+        ("PPG_corr_mean_imbalance", "safe_corr(ppg_mean_raw, channel_imbalance)"),
+        ("PPG_corr_mean_vmag", "safe_corr(ppg_mean_raw, channel_vector_magnitude)"),
+        ("PPG_corr_IR_imbalance", "safe_corr(ir_raw, channel_imbalance)"),
+    ])
+
     # ---- Meta ----
     META = OrderedDict([
         ("SIG_LEN", "float(len(ppg_mean_raw)) — 窗口采样点数 (3s @ 100Hz = 300)"),
@@ -1332,6 +1353,7 @@ def build_feature_formula_map(selected_features):
     ALL_TEMPLATES.update(PPG_BASIC)
     ALL_TEMPLATES.update(PPG_COMPLEXITY)
     ALL_TEMPLATES.update(PPG_ANTI_SPOOF)
+    ALL_TEMPLATES.update(PPG_SPATIAL)
     ALL_TEMPLATES.update(ACC_TEMPLATES)
     ALL_TEMPLATES.update(CROSS_MODAL)
     ALL_TEMPLATES.update(META)
@@ -1376,6 +1398,8 @@ def build_feature_formula_map(selected_features):
         # 确定类别
         if f in PPG_ANTI_SPOOF:
             info["category"] = "ppg_anti_spoof"
+        elif f in PPG_SPATIAL:
+            info["category"] = "ppg_spatial"
         elif f.startswith("PPG_DC_") or f.startswith("PPG_AC_") or f.startswith("PPG_DERIV_") or \
            f.startswith("PPG_FFT_") or f.startswith("PPG_AUTO_") or f.startswith("PPG_bp_") or \
            f in PPG_BASIC:
