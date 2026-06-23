@@ -1,0 +1,8 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+acceptance_*/
+audit_smoke_*/
+tmp_smoke_*/
+test_outputs/
