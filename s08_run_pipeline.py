@@ -1476,6 +1476,9 @@ def main():
         command = cmd[key]
         if args.dry_run:
             print(f'[DRY] {display_name}: {command}')
+            if key == stop_after:
+                print(f'\n[STOP] 已运行到 {stop_after}，按 --stop_after 提前结束')
+                break
             continue
 
         if command == '__plot__':
@@ -1484,18 +1487,27 @@ def main():
             plot_error_samples(args.artifact_dir, split='test', window_sec=args.window_sec, stride_sec=args.stride_sec)
             dt = time.time() - t0
             print(f'[OK] {display_name}  [{timedelta(seconds=int(dt))}]')
+            if key == stop_after:
+                print(f'\n[STOP] 已运行到 {stop_after}，按 --stop_after 提前结束')
+                break
             continue
         if command == '__extractor__':
             t0 = time.time()
             export_feature_extractor_script(args.artifact_dir)
             dt = time.time() - t0
             print(f'[OK] {display_name}  [{timedelta(seconds=int(dt))}]')
+            if key == stop_after:
+                print(f'\n[STOP] 已运行到 {stop_after}，按 --stop_after 提前结束')
+                break
             continue
         if command == '__cookbook__':
             t0 = time.time()
             export_deploy_cookbook(args.artifact_dir)
             dt = time.time() - t0
             print(f'[OK] {display_name}  [{timedelta(seconds=int(dt))}]')
+            if key == stop_after:
+                print(f'\n[STOP] 已运行到 {stop_after}，按 --stop_after 提前结束')
+                break
             continue
 
         ok = _run(display_name, command)

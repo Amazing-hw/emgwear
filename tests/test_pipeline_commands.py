@@ -2,6 +2,8 @@ import sys
 import ast
 import importlib.util
 import json
+import os
+import subprocess
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -156,6 +158,24 @@ def test_default_pipeline_steps_skip_postprocess_search_before_final_eval():
     assert "s06_cache_valid" not in default_keys
     assert "s07_post" not in default_keys
     assert step_keys.index("s05") < step_keys.index("s06_eval")
+
+
+def test_dry_run_stop_after_stops_printing_later_steps():
+    script = Path(__file__).resolve().parents[1] / "s08_run_pipeline.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--dry_run", "--stop_after", "s04", "--n_workers", "1"],
+        cwd=script.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+
+    assert result.returncode == 0
+    assert "稳定性特征筛选" in result.stdout
+    assert "XGBoost模型训练" not in result.stdout
+    assert "[STOP] 已运行到 s04" in result.stdout
 
 
 def test_deploy_feature_extractor_is_standalone_and_matches_training_ppg_features():
@@ -400,4 +420,3 @@ def test_deploy_cookbook_uses_current_postprocess_and_clip_bounds():
             out_dir.parent.rmdir()
         except OSError:
             pass
-
