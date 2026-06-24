@@ -255,6 +255,14 @@ def search_threshold_by_valid(model, X_valid, y_valid, objective="f1",
         if objective == "precision_constrained":
             best["min_precision"] = float(min_precision if min_precision is not None else 0.95)
 
+    if best is None:
+        best = {"threshold": 0.5, "score": 0.0, "precision": 0.0, "recall": 0.0,
+                "f1": 0.0, "fbeta": 0.0, "objective": objective}
+        if objective == "fbeta":
+            best["beta"] = float(beta)
+        if objective == "precision_constrained":
+            best["min_precision"] = float(min_precision if min_precision is not None else 0.95)
+
     return best
 
 

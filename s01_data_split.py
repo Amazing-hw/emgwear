@@ -181,20 +181,27 @@ def scan_h5_samples(dataset_dir, n_workers=None):
 
 
 def split_samples(samples, valid_size=0.15, test_size=0.15, random_state=42):
-    """sample 级分层切分。"""
+    """sample 级分层切分。单类别时自动退化为随机切分。"""
     y = np.array([s["target"] for s in samples])
     indices = np.arange(len(samples))
+    unique_labels = np.unique(y)
 
-    train_valid_idx, test_idx = train_test_split(
-        indices, test_size=test_size,
-        random_state=random_state, stratify=y
-    )
+    def _split(arr, test_ratio, labels):
+        """stratified split; falls back to random when fewer than 2 classes."""
+        if len(np.unique(labels)) >= 2 and len(labels) >= 4:
+            return train_test_split(
+                arr, test_size=test_ratio,
+                random_state=random_state, stratify=labels,
+            )
+        return train_test_split(
+            arr, test_size=test_ratio,
+            random_state=random_state,
+        )
+
+    train_valid_idx, test_idx = _split(indices, test_size, y)
     y_train_valid = y[train_valid_idx]
     valid_ratio_in_train_valid = valid_size / (1.0 - test_size)
-    train_idx, valid_idx = train_test_split(
-        train_valid_idx, test_size=valid_ratio_in_train_valid,
-        random_state=random_state, stratify=y_train_valid
-    )
+    train_idx, valid_idx = _split(train_valid_idx, valid_ratio_in_train_valid, y_train_valid)
     return {
         "train": [samples[i] for i in train_idx],
         "valid": [samples[i] for i in valid_idx],

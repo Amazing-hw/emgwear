@@ -88,7 +88,14 @@ _BUNDLE = None
 
 def load_bundle(path):
     global _BUNDLE
-    _BUNDLE = joblib.load(path)
+    try:
+        _BUNDLE = joblib.load(path)
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to load model bundle from {path}: {exc}\n"
+            "The file may be missing, corrupted, or from an incompatible version.\n"
+            "Re-run s05 and s06 --export_deploy to regenerate it."
+        ) from exc
     assert_bundle_ok(_BUNDLE)
     return _BUNDLE
 
@@ -96,16 +103,19 @@ def load_bundle(path):
 def assert_bundle_ok(bundle):
     needed = ["feature_names", "fill_values", "scaler", "model", "threshold"]
     for k in needed:
-        assert k in bundle, f"model_bundle missing key: {k}"
+        if k not in bundle:
+            raise ValueError(f"model_bundle missing key: {k}")
     if "meta" not in bundle:
         logger.warning("model_bundle missing 'meta' key; using defaults for fs_ppg/fs_emg/fs_acc")
     miss = [c for c in bundle["feature_names"] if c not in bundle["fill_values"]]
-    assert not miss, f"fill_values missing for: {miss[:5]} ..."
+    if miss:
+        raise ValueError(f"fill_values missing for features: {miss[:5]} ...")
 
 
 def apply_preprocess(feat_dict_list, bundle=None):
     b = bundle if bundle is not None else _BUNDLE
-    assert b is not None, "must call load_bundle() first"
+    if b is None:
+        raise RuntimeError("must call load_bundle() first")
     feature_names = b["feature_names"]
     fill_values = b["fill_values"]
     clip_bounds = b.get("clip_bounds", {})
@@ -840,7 +850,7 @@ def compute_window_model_metrics(results):
     }
 
 
-def compute_window_stream_metrics(results, cfg, warmup_frames=0, stride_sec=1.0):
+def compute_window_stream_metrics(results, cfg, warmup_frames=0, stride_sec=1.0, model_threshold=0.5):
     y_true, y_pred = [], []
     samples_with_no_windows = 0
     skipped_windows = 0
@@ -853,7 +863,7 @@ def compute_window_stream_metrics(results, cfg, warmup_frames=0, stride_sec=1.0)
 
         t = int(r["target"])
         _final_pred, sample_states, _window_preds, _scores = apply_postprocess(
-            probs, qm, "state_machine", cfg, model_threshold=0.5,
+            probs, qm, "state_machine", cfg, model_threshold=model_threshold,
             stride_sec=stride_sec, stage1_frames=r.get("stage1_frame_results"))
         start = min(warmup_frames, len(sample_states))
         skipped_windows += start
@@ -1146,7 +1156,8 @@ def get_deploy_stage1_threshold(th):
 def predict_sample_with_bundle(sample, dc_threshold, ac_dc_threshold,
                                 window_sec=3, stride_sec=1,
                                 method="state_machine", postprocess_cfg=None):
-    assert _BUNDLE is not None, "must call load_bundle() first"
+    if _BUNDLE is None:
+        raise RuntimeError("must call load_bundle() first")
     if postprocess_cfg is None:
         postprocess_cfg = dict(DEFAULT_POSTPROCESS_CONFIG)
 
@@ -1868,7 +1879,7 @@ def main(args=None):
     window_model_summary = compute_window_model_metrics(results)
     window_stream_summary = compute_window_stream_metrics(
         results, postprocess_cfg, warmup_frames=args.warmup_frames,
-        stride_sec=args.stride_sec)
+        stride_sec=args.stride_sec, model_threshold=float(bundle["threshold"]))
 
     ood_summary = _summarize_ood(results, alert_rate=args.ood_alert_rate)
 

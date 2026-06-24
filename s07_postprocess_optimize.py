@@ -83,7 +83,11 @@ def load_window_cache_npz(path):
         if key in cache:
             arr = np.asarray(cache[key], dtype=np.float64)
             if len(arr) != n:
-                arr = np.resize(arr, n).astype(np.float64)
+                # Pad/trim to match window count; use NaN padding (not np.resize which repeats)
+                padded = np.full(n, np.nan, dtype=np.float64)
+                copy_len = min(len(arr), n)
+                padded[:copy_len] = arr[:copy_len]
+                arr = padded
             cache[key] = arr
         else:
             cache[key] = np.full(n, np.nan, dtype=np.float64)
@@ -380,8 +384,12 @@ def main(args=None):
     cfg_path = os.path.join(args.artifact_dir, "final_model_config.json")
     cfg = {}
     if os.path.exists(cfg_path):
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"[WARN] Failed to read {cfg_path}, using defaults: {exc}")
+            cfg = {}
     cfg["postprocess"] = best_params
     cfg["postprocess_cache_optimization"] = payload
     with open(cfg_path, "w", encoding="utf-8") as f:
