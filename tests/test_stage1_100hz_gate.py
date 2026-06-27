@@ -47,7 +47,7 @@ def test_stage1_threshold_artifact_uses_fixed_engineering_threshold():
     df = pd.DataFrame({
         "sample_name": ["p1", "n1"],
         "target": [1, 0],
-        "dc": [3.0e6, 1.0e6],
+        "dc": [0.30e6, 0.10e6],
         "ac_dc_ratio": [0.01, 0.02],
     })
 
@@ -82,7 +82,7 @@ def test_stage1_main_ignores_legacy_search_method(monkeypatch):
         df = pd.DataFrame({
             "sample_name": ["p1", "n1"],
             "target": [1, 0],
-            "dc": [3.0e6, 1.0e6],
+            "dc": [0.30e6, 0.10e6],
             "ac_dc_ratio": [0.01, 0.02],
         })
         monkeypatch.setattr(s02, "extract_stage1_windows", lambda *args, **kwargs: df.copy())
@@ -126,9 +126,9 @@ def test_stage2_window_features_include_emg_and_acc():
 
     rng = np.random.default_rng(42)
     ppg = np.column_stack([
-        2.0e6 + 1000.0 * np.sin(np.linspace(0, 6 * np.pi, 300)),
-        2.1e6 + 900.0 * np.sin(np.linspace(0, 6 * np.pi, 300) + 0.1),
-        2.2e6 + 800.0 * np.sin(np.linspace(0, 6 * np.pi, 300) + 0.2),
+        0.20e6 + 1000.0 * np.sin(np.linspace(0, 6 * np.pi, 300)),
+        0.21e6 + 900.0 * np.sin(np.linspace(0, 6 * np.pi, 300) + 0.1),
+        0.22e6 + 800.0 * np.sin(np.linspace(0, 6 * np.pi, 300) + 0.2),
     ])
     emg = rng.normal(0.0, 1.0, size=(3000, 2))
     acc = rng.normal(0.0, 0.01, size=(300, 3))

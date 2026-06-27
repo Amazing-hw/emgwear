@@ -106,6 +106,18 @@ def build_pipeline_commands(args):
     feature_counts = str(getattr(args, "model_search_feature_counts", "") or "").strip()
     if feature_counts:
         s05_extra += f' --model_search_feature_counts "{feature_counts}"'
+    if getattr(args, "hard_negative_mining", True):
+        s05_extra += (
+            f' --hard_negative_mining'
+            f' --hard_negative_top_percentile {_arg(args, "hard_negative_top_percentile", 0.10)}'
+            f' --hard_negative_weight {_arg(args, "hard_negative_weight", 3.0)}'
+            f' --hard_negative_min_accuracy_delta {_arg(args, "hard_negative_min_accuracy_delta", 0.0)}'
+        )
+        hn_min_prob = getattr(args, "hard_negative_min_probability", None)
+        if hn_min_prob is not None:
+            s05_extra += f' --hard_negative_min_probability {hn_min_prob}'
+    else:
+        s05_extra += ' --no-hard_negative_mining'
     return {
         's01': f'"{PYTHON}" "{_script_path("s01_data_split")}" --dataset_dir "{args.dataset_dir}" --artifact_dir "{args.artifact_dir}" --n_workers {args.n_workers}',
         's02': f'"{PYTHON}" "{_script_path("s02_ir_dc_threshold")}" --artifact_dir "{args.artifact_dir}" --n_workers {args.n_workers}',
@@ -1408,12 +1420,22 @@ def main():
                    help='s06 评估用的数据 split')
     p.add_argument('--model_search_feature_counts', type=str, default='',
                    help='搜参时测试的特征数量，逗号分隔 (如 8,10,12,15)。留空则用 --max_features')
+    p.add_argument('--hard_negative_mining', action=argparse.BooleanOptionalAction, default=True,
+                   help='启用 train-only OOF hard negative mining，并在 s05 最终训练中加权')
+    p.add_argument('--hard_negative_min_probability', type=float, default=None,
+                   help='hard negative 的 OOF 概率下限；默认使用 valid 固化出的窗口阈值')
+    p.add_argument('--hard_negative_top_percentile', type=float, default=0.10,
+                   help='选取负样本 OOF 概率最高的一部分作为 hard negative')
+    p.add_argument('--hard_negative_weight', type=float, default=3.0,
+                   help='hard negative 训练样本权重')
+    p.add_argument('--hard_negative_min_accuracy_delta', type=float, default=0.0,
+                   help='采用 hard-negative weighted 候选所需的 valid accuracy 最小提升')
     p.add_argument('--accuracy_first_optimize', action=argparse.BooleanOptionalAction, default=False,
                    help='使用窗口准确率优先的 s05 搜索预设')
 
     # ── 向后兼容: --with_postprocess ──
     p.add_argument('--with_postprocess', action='store_true',
-                   help='等效于 --export_window_cache --optimize_postprocess')
+                   help='等效于 --accuracy_first_optimize --export_window_cache --optimize_postprocess')
 
     args = p.parse_args()
 

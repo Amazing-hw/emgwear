@@ -139,6 +139,11 @@ def test_pipeline_commands_pass_model_search_params_to_s05():
         model_search_subsample="0.8",
         model_search_colsample_bytree="0.7,0.8",
         model_search_feature_counts="8,12",
+        hard_negative_mining=True,
+        hard_negative_min_probability=None,
+        hard_negative_top_percentile=0.10,
+        hard_negative_weight=3.0,
+        hard_negative_min_accuracy_delta=0.0,
     )
 
     cmd = s08.build_pipeline_commands(args)["s05"]
@@ -152,6 +157,51 @@ def test_pipeline_commands_pass_model_search_params_to_s05():
     assert '--model_search_max_depth "2"' in cmd
     assert '--model_search_colsample_bytree "0.7,0.8"' in cmd
     assert '--model_search_feature_counts "8,12"' in cmd
+
+
+def test_pipeline_commands_pass_hard_negative_params_to_s05():
+    args = SimpleNamespace(
+        dataset_dir="dataset",
+        artifact_dir="artifacts",
+        n_workers=2,
+        max_features=12,
+        window_sec=3,
+        stride_sec=1,
+        model_search=True,
+        max_model_nodes=260,
+        model_search_fp_cost=2.0,
+        model_search_size_cost=0.1,
+        model_search_strategy="staged_group_cv",
+        model_search_max_candidates=150,
+        model_search_stage2_top_k=20,
+        model_search_cv_folds=3,
+        model_search_cv_repeats=1,
+        model_search_random_state=42,
+        model_search_accuracy_tolerance=0.004,
+        model_search_stage1_top_k=3,
+        model_search_n_estimators="20,30",
+        model_search_max_depth="2",
+        model_search_learning_rate="0.05",
+        model_search_min_child_weight="30,50",
+        model_search_reg_lambda="20",
+        model_search_reg_alpha="2",
+        model_search_subsample="0.8",
+        model_search_colsample_bytree="0.7,0.8",
+        model_search_feature_counts="8,12",
+        hard_negative_mining=True,
+        hard_negative_min_probability=0.4,
+        hard_negative_top_percentile=0.2,
+        hard_negative_weight=2.5,
+        hard_negative_min_accuracy_delta=0.01,
+    )
+
+    cmd = s08.build_pipeline_commands(args)["s05"]
+
+    assert "--hard_negative_mining" in cmd
+    assert "--hard_negative_min_probability 0.4" in cmd
+    assert "--hard_negative_top_percentile 0.2" in cmd
+    assert "--hard_negative_weight 2.5" in cmd
+    assert "--hard_negative_min_accuracy_delta 0.01" in cmd
 
 
 def test_default_model_search_axes_include_fine_n_estimators():
@@ -558,3 +608,137 @@ def test_model_search_rejects_validation_based_strategy():
             scale_pos_weight=1.0,
             groups=np.array(["a", "b"]),
         )
+
+
+def test_build_hard_negative_weights_from_oof_uses_train_rows_only():
+    df_train = pd.DataFrame({
+        "sample_name": ["a", "b", "c", "d"],
+        "h5_file": ["train.h5"] * 4,
+        "window_index": [0, 1, 2, 3],
+        "target": [0, 0, 1, 0],
+        "mode": [1, 1, 1, 2],
+        "quality_bin": ["ok", "ok", "ok", "low"],
+    })
+    oof = np.asarray([0.93, 0.20, 0.99, 0.91], dtype=float)
+
+    weights, report, summary = s05.build_hard_negative_training_weights_from_oof(
+        df_train,
+        oof,
+        min_probability=0.9,
+        top_percentile=0.5,
+        hard_negative_weight=3.0,
+    )
+
+    assert weights.tolist() == [3.0, 1.0, 1.0, 3.0]
+    assert set(report["sample_name"]) == {"a", "d"}
+    assert set(report["h5_file"]) == {"train.h5"}
+    assert summary["enabled"] is True
+    assert summary["source_split"] == "train_only"
+    assert summary["n_train_rows"] == 4
+    assert summary["n_hard_negatives"] == 2
+
+
+def test_hard_negative_oof_splits_keep_sample_groups_disjoint():
+    y = np.asarray([0, 0, 1, 1, 0, 1], dtype=int)
+    groups = np.asarray(["a", "a", "b", "b", "c", "c"], dtype=object)
+
+    splits, meta = s05.build_hard_negative_oof_splits(
+        y,
+        groups=groups,
+        n_folds=3,
+        random_state=13,
+    )
+
+    assert meta["source_split"] == "train_only"
+    assert splits
+    for train_idx, valid_idx in splits:
+        train_groups = set(groups[train_idx])
+        valid_groups = set(groups[valid_idx])
+        assert train_groups.isdisjoint(valid_groups)
+
+
+def test_finalize_hard_negative_artifacts_promotes_chosen_feature_count_files(tmp_path):
+    report_path = tmp_path / "hard_negative_mining_train_k8.csv"
+    weights_path = tmp_path / "hard_negative_training_weights_k8.csv"
+    report_path.write_text("sample_name,prob_oof\na,0.9\n", encoding="utf-8")
+    weights_path.write_text("sample_name,sample_weight\na,3.0\n", encoding="utf-8")
+
+    summary = s05.finalize_hard_negative_artifacts({
+        "enabled": True,
+        "report_path": str(report_path),
+        "weights_path": str(weights_path),
+    }, str(tmp_path))
+
+    canonical_report = tmp_path / "hard_negative_mining_train.csv"
+    canonical_weights = tmp_path / "hard_negative_training_weights.csv"
+    assert canonical_report.read_text(encoding="utf-8") == report_path.read_text(encoding="utf-8")
+    assert canonical_weights.read_text(encoding="utf-8") == weights_path.read_text(encoding="utf-8")
+    assert summary["report_path"] == str(canonical_report)
+    assert summary["weights_path"] == str(canonical_weights)
+
+
+def test_hard_negative_candidate_selection_keeps_baseline_when_weighted_is_worse():
+    baseline = {
+        "name": "baseline",
+        "valid_best": {
+            "accuracy": 0.94,
+            "precision": 0.95,
+            "recall": 0.92,
+            "f1": 0.93,
+            "confusion_matrix": {"TN": 19, "FP": 1, "FN": 2, "TP": 23},
+        },
+    }
+    weighted = {
+        "name": "hard_negative_weighted",
+        "valid_best": {
+            "accuracy": 0.93,
+            "precision": 0.96,
+            "recall": 0.88,
+            "f1": 0.92,
+            "confusion_matrix": {"TN": 20, "FP": 0, "FN": 4, "TP": 21},
+        },
+    }
+
+    chosen, summary = s05.select_hard_negative_model_candidate(
+        baseline,
+        weighted,
+        min_accuracy_delta=0.0,
+    )
+
+    assert chosen is baseline
+    assert summary["selected_candidate"] == "baseline"
+    assert summary["selection_reason"] == "baseline_valid_score_not_worse"
+    assert summary["candidates"]["hard_negative_weighted"]["valid_best"]["recall"] == 0.88
+
+
+def test_hard_negative_candidate_selection_uses_weighted_when_valid_score_improves():
+    baseline = {
+        "name": "baseline",
+        "valid_best": {
+            "accuracy": 0.93,
+            "precision": 0.94,
+            "recall": 0.90,
+            "f1": 0.92,
+            "confusion_matrix": {"TN": 18, "FP": 2, "FN": 3, "TP": 22},
+        },
+    }
+    weighted = {
+        "name": "hard_negative_weighted",
+        "valid_best": {
+            "accuracy": 0.95,
+            "precision": 0.96,
+            "recall": 0.92,
+            "f1": 0.94,
+            "confusion_matrix": {"TN": 19, "FP": 1, "FN": 2, "TP": 23},
+        },
+    }
+
+    chosen, summary = s05.select_hard_negative_model_candidate(
+        baseline,
+        weighted,
+        min_accuracy_delta=0.0,
+    )
+
+    assert chosen is weighted
+    assert summary["selected_candidate"] == "hard_negative_weighted"
+    assert summary["selection_reason"] == "hard_negative_valid_score_improved"

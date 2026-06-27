@@ -17,7 +17,7 @@ def _make_windowed_h5():
     h5_path = root / "windowed.h5"
     with h5py.File(h5_path, "w") as f:
         grp = f.create_group("sample_1")
-        grp.create_dataset("ppg", data=np.ones((2, 6, 300), dtype=np.float64) * 3.0e6)
+        grp.create_dataset("ppg", data=np.ones((2, 6, 300), dtype=np.float64) * 0.30e6)
         grp.create_dataset("emg", data=np.ones((2, 2, 3000), dtype=np.float64))
         grp.create_dataset("acc", data=np.ones((2, 3, 300), dtype=np.float64) * 0.01)
     return root, h5_path
@@ -31,7 +31,7 @@ def _make_nested_window_h5():
         parent = f.create_group("subjectA_session1")
         for idx in [4, 1, 3, 0, 2]:
             grp = parent.create_group(f"subjectA_session1_w{idx}_1")
-            grp.create_dataset("ppg", data=np.ones((6, 300), dtype=np.float64) * (3.0e6 + idx))
+            grp.create_dataset("ppg", data=np.ones((6, 300), dtype=np.float64) * (0.30e6 + idx))
             grp.create_dataset("emg", data=np.ones((2, 3000), dtype=np.float64) * idx)
             grp.create_dataset("acc", data=np.ones((3, 300), dtype=np.float64) * (idx + 0.01))
     return root, h5_path
@@ -81,8 +81,8 @@ def test_nested_window_loaders_preserve_name_order_and_window_indices():
         assert ppg.shape == (2, 300, 6)
         assert emg.shape == (2, 3000, 2)
         assert acc.shape == (2, 300, 3)
-        assert ppg[0, 0, 0] == 3.0e6 + 3
-        assert ppg[1, 0, 0] == 3.0e6 + 4
+        assert ppg[0, 0, 0] == 0.30e6 + 3
+        assert ppg[1, 0, 0] == 0.30e6 + 4
         assert ppg_mean_windows.shape == (2, 300)
         assert windows[0]["start_100hz"] == 300
         assert windows[1]["start_100hz"] == 400
@@ -297,7 +297,7 @@ def test_s06_inference_uses_nested_window_group_order(monkeypatch):
         )
 
         assert sample["window_indices"] == [3, 4]
-        assert [c[0] for c in calls] == [3.0e6 + 3, 3.0e6 + 4]
+        assert [c[0] for c in calls] == [0.30e6 + 3, 0.30e6 + 4]
         assert out["window_probs"] == [0.8, 0.9]
         assert out["window_start_100hz"] == [300, 400]
         assert len(out["stage1_frame_results"]) == 2

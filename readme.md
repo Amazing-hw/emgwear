@@ -289,20 +289,20 @@ emg_bp_clean:
   默认 staged_group_cv。
   含义是先从高预算细粒度空间确定性采样候选，再用 train 内部 group-aware repeated CV 复评。
 
---search_budget
-  模型搜索预算预设。
-  fast: max_candidates=150, stage2_top_k=20, cv_repeats=1，适合快速验证链路。
-  balanced: max_candidates=300, stage2_top_k=40, cv_repeats=3，默认设置，在运行时间和稳定性之间折中。
-  accuracy: max_candidates=600, stage2_top_k=80, cv_repeats=5，放宽搜索空间并加强 train 内部稳定性评估。
-  手动传入 --model_search_max_candidates / --model_search_stage2_top_k / --model_search_cv_repeats 会覆盖预设值。
+--runtime_profile
+  运行预算预设 (fast / balanced / thorough)。
+  fast: max_candidates=120, stage2_top_k=16，适合快速验证链路。
+  balanced: max_candidates=180, stage2_top_k=24，默认设置，在运行时间和稳定性之间折中。
+  thorough: max_candidates=360, stage2_top_k=48，放宽搜索空间并加强 train 内部稳定性评估。
+  手动传入 --model_search_max_candidates / --model_search_stage2_top_k 会覆盖预设值。
 
 --model_search_max_candidates
   Stage A 最多采样多少个候选。
-  默认由 --search_budget balanced 给出，即 300。
+  默认由 --runtime_profile balanced 给出，即 180。
 
 --model_search_stage2_top_k
   Stage B 进入 group CV 复评的候选数。
-  默认由 --search_budget balanced 给出，即 40。
+  默认由 --runtime_profile balanced 给出，即 24。
 
 --model_search_cv_folds
   group CV 折数。
@@ -310,7 +310,7 @@ emg_bp_clean:
 
 --model_search_cv_repeats
   group CV 重复次数。
-  默认由 --search_budget balanced 给出，即 3。
+  默认 2。
 
 --model_search_random_state
   候选采样和 CV 分组的随机种子。
@@ -331,7 +331,7 @@ emg_bp_clean:
 
 --model_search_n_estimators
   XGBoost 树数量候选。
-  默认 20,25,30,35,40,45,50,55,60,70,80。
+  默认 20,25,30,35,40,45,50,55,60。
 
 --model_search_max_depth
   XGBoost 单棵树最大深度候选。
@@ -367,7 +367,7 @@ emg_bp_clean:
   由 s05 在同一次模型搜索内完成：每个 k 取 ranked_features.json 的 top-k 特征，
   用 train group CV 评估，再按 mean accuracy、std、FP rate、节点数、特征数排序。
   需要配合默认 --model_search_strategy staged_group_cv 使用，不使用 test，也不消耗 valid 做模型选择。
-  留空则使用 --max_features 固定值。
+  默认值 8,10,12,15,18。
 
 --skip
   跳过指定步骤，逗号分隔（如 s03,s04）。
@@ -905,13 +905,13 @@ python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifact
 如果默认模型搜索太慢：
 
 ```bash
-python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --search_budget fast
+python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --runtime_profile fast
 ```
 
 如果希望放宽搜索空间但仍控制运行时间：
 
 ```bash
-python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess --search_budget accuracy
+python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess --runtime_profile thorough
 ```
 
 如果需要手动分步做后处理搜参（等价于 `--with_postprocess`）：
@@ -949,4 +949,12 @@ python -m py_compile deploy_feature_contract.py s01_data_split.py s02_ir_dc_thre
 python s06_deploy_eval.py --help
 python s07_postprocess_optimize.py --help
 python s08_run_pipeline.py --help
+```
+
+## 测试集特征可视化
+
+```bash
+# 生成测试集特征嵌入图（PCA、t-SNE、UMAP 降维 + 分布图 + AUC 排序 + 逐样本热力图）
+python test_feature_report.py --artifact_dir artifacts
+python test_feature_report.py --artifact_dir artifacts --methods pca,tsne --max_points 500 --dpi 200
 ```
