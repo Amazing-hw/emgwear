@@ -1,5 +1,31 @@
 # Wearing Liveness Detection
 
+## 防止 test 过拟合协议
+
+本项目把 `test` 当作最终封闭评估集，而不是调参反馈集：
+
+1. 模型参数和特征数量只用 `train` 内部 group CV 选择。
+2. 窗口概率阈值只用 `valid` 固化。
+3. 后处理状态机参数只允许用 `valid` 缓存搜索。
+4. `test` 只用于最终端到端评估和部署报告，不允许参与模型搜参、阈值选择或后处理搜参。
+5. 如果已经根据 `test` 结果反复调整过参数，当前 `test` 应视为开发集；最终报告应重新划分或补采新的 lockbox test。
+6. 外部 `train/valid/test` 只固定切分一次；模型稳定性通过 `train` 内部 repeated group CV 评估，不通过反复重切外部 test 来调参。
+
+代码层面会阻断以下命令：
+
+```bash
+python s06_deploy_eval.py --optimize --optimize_split test
+python s07_postprocess_optimize.py --split test
+```
+
+推荐完整流程仍是：
+
+```text
+train: 特征选择 + XGBoost 参数/特征数搜索
+valid: 窗口阈值 + 后处理状态机参数
+test : 最终一次端到端报告
+```
+
 本项目用于手表佩戴活体检测。当前主流程是：
 
 1. `s01` 扫描 H5，并按“原始数据条目”切分 `train/valid/test`。
@@ -186,7 +212,7 @@ DC > dc_threshold AND AC_DC_RATIO < ac_dc_threshold
 默认部署阈值：
 
 ```text
-dc_threshold = 2.2e6
+dc_threshold = 0.2e6
 ac_dc_threshold = 0.35
 ```
 
@@ -266,8 +292,8 @@ emg_bp_clean:
 --search_budget
   模型搜索预算预设。
   fast: max_candidates=150, stage2_top_k=20, cv_repeats=1，适合快速验证链路。
-  balanced: max_candidates=300, stage2_top_k=40, cv_repeats=1，默认设置，控制运行时间。
-  accuracy: max_candidates=600, stage2_top_k=80, cv_repeats=1，放宽搜索空间但不增加 CV 重复次数。
+  balanced: max_candidates=300, stage2_top_k=40, cv_repeats=3，默认设置，在运行时间和稳定性之间折中。
+  accuracy: max_candidates=600, stage2_top_k=80, cv_repeats=5，放宽搜索空间并加强 train 内部稳定性评估。
   手动传入 --model_search_max_candidates / --model_search_stage2_top_k / --model_search_cv_repeats 会覆盖预设值。
 
 --model_search_max_candidates
@@ -284,7 +310,7 @@ emg_bp_clean:
 
 --model_search_cv_repeats
   group CV 重复次数。
-  默认由 --search_budget balanced 给出，即 1。
+  默认由 --search_budget balanced 给出，即 3。
 
 --model_search_random_state
   候选采样和 CV 分组的随机种子。
@@ -380,14 +406,16 @@ emg_bp_clean:
 ```text
 1. 只用 train 内部 group CV 选择模型参数，不用 valid，也不用 test。
 2. group 默认使用 `sample_name`，防止同一条原始数据的窗口跨 fold 泄漏；缺失时退回分层 CV，并在 summary 记录 fallback。
-3. 默认参数 baseline 强制加入候选，即使用户自定义 grid 没覆盖默认参数。
-4. 只在 `total_nodes <= max_model_nodes` 的候选里选择。
-5. 主排序是 `mean_cv_accuracy` 最高。
-6. 次排序是 `std_cv_accuracy` 更低。
-7. 再排序是 `mean_cv_fp_rate` 更低。
-8. 最后排序是 `final_total_nodes` 更少。
-9. 如果搜索候选的 mean CV accuracy 没超过默认参数，默认参数胜出。
-10. valid 只用于窗口概率阈值固化；test 只用于最终报告。
+3. 默认 balanced 预算会在 train 内部做 3 次 repeated group CV；accuracy 预算做 5 次。
+4. 默认参数 baseline 强制加入候选，即使用户自定义 grid 没覆盖默认参数。
+5. 只在 `total_nodes <= max_model_nodes` 的候选里选择。
+6. 主排序是 `mean_cv_accuracy` 最高。
+7. 次排序是 `std_cv_accuracy` 更低。
+8. 再排序是 `mean_cv_fp_rate` 更低。
+9. 再排序是 `final_total_nodes` 更少。
+10. 最后排序是特征数更少。
+11. 如果搜索候选的 mean CV accuracy 没超过默认参数，默认参数胜出。
+12. valid 只用于窗口概率阈值固化；test 只用于最终报告。
 ```
 
 ## 默认产物

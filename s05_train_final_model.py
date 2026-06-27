@@ -950,140 +950,14 @@ def search_xgb_hyperparameters_group_cv(args, X_train, y_train, groups=None,
 
 def search_xgb_hyperparameters(args, X_train, y_train, X_valid, y_valid,
                                scale_pos_weight=1.0, groups=None):
-    if getattr(args, "model_search_strategy", "staged_group_cv") == "staged_group_cv":
-        return search_xgb_hyperparameters_group_cv(
-            args, X_train, y_train, groups=groups, scale_pos_weight=scale_pos_weight)
-
-    axes = build_model_search_axes(args)
-    stage1_keys = ["n_estimators", "max_depth", "min_child_weight", "reg_lambda", "reg_alpha"]
-    stage2_keys = ["learning_rate", "subsample", "colsample_bytree"]
-    fixed_stage2 = {key: _middle_value(axes[key]) for key in stage2_keys}
-    top_k = max(1, int(args.model_search_stage1_top_k))
-
-    records = []
-    best = None
-    best_model = None
-
-    stage1_plan = []
-    for values in product(*(axes[k] for k in stage1_keys)):
-        params = build_default_xgb_params(scale_pos_weight=scale_pos_weight)
-        params.update(fixed_stage2)
-        params.update(dict(zip(stage1_keys, values)))
-        stage1_plan.append(params)
-
-    n_workers_valid = max(1, int(getattr(args, "model_search_workers", 4)))
-    logger.info("model_search enabled: stage1 evaluating %d structure candidates (workers=%d)",
-                len(stage1_plan), n_workers_valid)
-    candidate_count = 0
-    stage1_records = []
-
-    def _eval_stage1(args_tuple):
-        params, idx = args_tuple
-        return evaluate_model_search_candidate(
-            params, idx, "stage1_structure", args, X_train, y_train, X_valid, y_valid,
-            n_jobs=1 if n_workers_valid > 1 else None)
-
-    if n_workers_valid > 1 and len(stage1_plan) > 4:
-        with ThreadPoolExecutor(max_workers=n_workers_valid) as executor:
-            plan_with_idx = [(p, i + 1) for i, p in enumerate(stage1_plan)]
-            for candidate, record in executor.map(_eval_stage1, plan_with_idx):
-                candidate_count += 1
-                records.append(record)
-                stage1_records.append(record)
-                if is_better_model_search_record(
-                        record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
-                    best = record
-                    best_model = candidate
-    else:
-        for i, params in enumerate(stage1_plan):
-            candidate_count += 1
-            candidate, record = _eval_stage1((params, candidate_count))
-            records.append(record)
-            stage1_records.append(record)
-            if is_better_model_search_record(
-                    record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
-                best = record
-                best_model = candidate
-
-    stage1_records.sort(key=lambda r: (
-        not r["eligible"],
-        -float(r["metrics"].get("accuracy", 0.0)),
-        int(r["total_nodes"]),
-        float(r["fp_rate"]),
-        int(r["rank_input_order"]),
-    ))
-    refine_structures = [r["params"] for r in stage1_records[:top_k]]
-    seen = {_freeze_params(r["params"]) for r in records}
-    stage2_plan = []
-    for base in refine_structures:
-        structure = {key: base[key] for key in stage1_keys}
-        for values in product(*(axes[k] for k in stage2_keys)):
-            params = build_default_xgb_params(scale_pos_weight=scale_pos_weight)
-            params.update(structure)
-            params.update(dict(zip(stage2_keys, values)))
-            frozen = _freeze_params(params)
-            if frozen in seen:
-                continue
-            seen.add(frozen)
-            stage2_plan.append(params)
-
-    logger.info("model_search enabled: stage2 refining %d candidates from top %d structures (workers=%d)",
-                len(stage2_plan), len(refine_structures), n_workers_valid)
-
-    def _eval_stage2(args_tuple):
-        params, idx = args_tuple
-        return evaluate_model_search_candidate(
-            params, idx, "stage2_refine", args, X_train, y_train, X_valid, y_valid,
-            n_jobs=1 if n_workers_valid > 1 else None)
-
-    if n_workers_valid > 1 and len(stage2_plan) > 4:
-        with ThreadPoolExecutor(max_workers=n_workers_valid) as executor:
-            plan_with_idx = [(p, candidate_count + i + 1) for i, p in enumerate(stage2_plan)]
-            for candidate, record in executor.map(_eval_stage2, plan_with_idx):
-                candidate_count += 1
-                records.append(record)
-                if is_better_model_search_record(
-                        record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
-                    best = record
-                    best_model = candidate
-    else:
-        for i, params in enumerate(stage2_plan):
-            candidate_count += 1
-            candidate, record = _eval_stage2((params, candidate_count))
-            records.append(record)
-            if is_better_model_search_record(
-                    record, best, accuracy_tolerance=args.model_search_accuracy_tolerance):
-                best = record
-                best_model = candidate
-
-    if best_model is None:
-        raise RuntimeError(
-            f"model_search found no candidate under max_model_nodes={args.max_model_nodes}. "
-            "Relax --max_model_nodes or shrink the search grid."
+    if getattr(args, "model_search_strategy", "staged_group_cv") != "staged_group_cv":
+        raise ValueError(
+            "Only model_search_strategy='staged_group_cv' is supported. "
+            "Validation-based model selection is disabled to keep valid for "
+            "threshold/postprocess calibration and test for final reporting."
         )
-
-    records.sort(key=lambda r: (
-        not r["eligible"],
-        -float(r["metrics"].get("accuracy", 0.0)),
-        int(r["total_nodes"]),
-        float(r["fp_rate"]),
-        int(r["rank_input_order"]),
-    ))
-    return best_model, {
-        "enabled": True,
-        "selection_data": "valid_only",
-        "selection_policy": "valid_accuracy_primary_size_tiebreak",
-        "accuracy_tolerance": float(args.model_search_accuracy_tolerance),
-        "stage1_top_k": int(top_k),
-        "max_model_nodes": int(args.max_model_nodes),
-        "fp_cost": float(args.model_search_fp_cost),
-        "size_cost": float(args.model_search_size_cost),
-        "grid_size": int(candidate_count),
-        "stage1_grid_size": int(len(stage1_plan)),
-        "stage2_grid_size": int(len(stage2_plan)),
-        "best": _json_safe_model_search_record(best),
-        "top_candidates": [_json_safe_model_search_record(r) for r in records[:20]],
-    }, records
+    return search_xgb_hyperparameters_group_cv(
+        args, X_train, y_train, groups=groups, scale_pos_weight=scale_pos_weight)
 
 
 def apply_deployable_feature_contract(fs, ranked=None):
@@ -1406,16 +1280,16 @@ def main(args=None):
     parser.add_argument("--max_features", type=int, default=None,
                         help="Compatibility passthrough from s08; selected_features.json remains authoritative.")
     parser.add_argument("--model_search", action="store_true",
-                        help="Search XGBoost hyperparameters on valid.")
+                        help="Search XGBoost hyperparameters using train-only repeated group CV.")
     parser.add_argument("--max_model_nodes", type=int, default=500)
     parser.add_argument("--model_search_fp_cost", type=float, default=2.0)
     parser.add_argument("--model_search_size_cost", type=float, default=0.1)
     parser.add_argument("--model_search_strategy", type=str, default="staged_group_cv",
-                        choices=["staged_group_cv", "staged_valid"])
+                        choices=["staged_group_cv"])
     parser.add_argument("--model_search_max_candidates", type=int, default=300)
     parser.add_argument("--model_search_stage2_top_k", type=int, default=40)
     parser.add_argument("--model_search_cv_folds", type=int, default=3)
-    parser.add_argument("--model_search_cv_repeats", type=int, default=2)
+    parser.add_argument("--model_search_cv_repeats", type=int, default=3)
     parser.add_argument("--model_search_random_state", type=int, default=42)
     parser.add_argument("--model_search_workers", type=int, default=4,
                         help="Number of parallel workers for model search candidate evaluation (default 4)")

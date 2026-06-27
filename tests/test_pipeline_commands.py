@@ -60,6 +60,26 @@ def test_pipeline_commands_include_npz_cache_postprocess_path():
     assert "--split valid" in commands["s07_post"]
 
 
+def test_pipeline_postprocess_search_stays_on_valid_when_final_eval_uses_test():
+    args = SimpleNamespace(
+        dataset_dir="dataset",
+        artifact_dir="artifacts",
+        n_workers=2,
+        max_features=15,
+        window_sec=3,
+        stride_sec=1,
+        split="test",
+        postprocess_fp_cost=2.0,
+    )
+
+    commands = s08.build_pipeline_commands(args)
+
+    assert "--split valid" in commands["s06_cache_valid"]
+    assert "--split valid" in commands["s07_post"]
+    assert "--split test" in commands["s06_eval"]
+    assert "--split test" in commands["s06_xpt"]
+
+
 def test_pipeline_commands_enable_model_search_by_default():
     args = SimpleNamespace(
         dataset_dir="dataset",
@@ -78,7 +98,7 @@ def test_pipeline_commands_enable_model_search_by_default():
     assert "--model_search_max_candidates 300" in cmd
     assert "--model_search_stage2_top_k 40" in cmd
     assert "--model_search_cv_folds 3" in cmd
-    assert "--model_search_cv_repeats 1" in cmd
+    assert "--model_search_cv_repeats 3" in cmd
     assert "--model_search_random_state 42" in cmd
 
 
@@ -126,7 +146,7 @@ def test_accuracy_search_budget_expands_candidates_without_extra_cv_repeats():
 
     assert "--model_search_max_candidates 600" in cmd
     assert "--model_search_stage2_top_k 80" in cmd
-    assert "--model_search_cv_repeats 1" in cmd
+    assert "--model_search_cv_repeats 5" in cmd
 
 
 def test_fast_search_budget_reduces_candidates_for_short_runs():

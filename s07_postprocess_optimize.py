@@ -313,6 +313,12 @@ def main(args=None):
     if args is None:
         args = parser.parse_args()
 
+    if str(args.split).lower() == "test":
+        raise ValueError(
+            "test split cannot be used for postprocess optimization; use valid "
+            "and reserve test for final reporting."
+        )
+
     cache_dir = os.path.join(args.artifact_dir, args.cache_root, args.split)
     if not os.path.isdir(cache_dir) and args.cache_root == "window_outputs":
         legacy = os.path.join(args.artifact_dir, "window_cache", args.split)

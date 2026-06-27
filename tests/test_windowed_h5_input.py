@@ -170,7 +170,7 @@ def test_s03_extract_rows_uses_existing_h5_windows(monkeypatch):
 
         rows = s03._extract_rows_for_sample(
             sample,
-            dc_threshold=2.2e6,
+            dc_threshold=0.2e6,
             ac_dc_threshold=0.35,
             win_samples=300,
             stride_samples=100,
@@ -198,7 +198,7 @@ def test_s02_stage1_features_use_existing_h5_windows():
         assert len(rows) == 2
         assert rows[0]["start_100hz"] == 0
         assert rows[1]["start_100hz"] == 300
-        assert rows[0]["dc"] > 2.2e6
+        assert rows[0]["dc"] > 0.2e6
     finally:
         shutil.rmtree(root.parent, ignore_errors=True)
 
@@ -250,7 +250,7 @@ def test_s06_inference_uses_existing_h5_windows(monkeypatch):
         }
         out = s06._infer_one_sample(
             sample,
-            dc_threshold=2.2e6,
+            dc_threshold=0.2e6,
             ac_dc_threshold=0.35,
             window_sec=3.0,
             stride_sec=1.0,
@@ -289,7 +289,7 @@ def test_s06_inference_uses_nested_window_group_order(monkeypatch):
 
         out = s06._infer_one_sample(
             sample,
-            dc_threshold=2.2e6,
+            dc_threshold=0.2e6,
             ac_dc_threshold=0.35,
             window_sec=3.0,
             stride_sec=1.0,
@@ -326,7 +326,7 @@ def test_window_cache_preserves_nested_window_start_indices(monkeypatch):
         }
         out = s06._infer_one_sample(
             sample,
-            dc_threshold=2.2e6,
+            dc_threshold=0.2e6,
             ac_dc_threshold=0.35,
             window_sec=3.0,
             stride_sec=1.0,
@@ -374,7 +374,7 @@ def test_s03_multiprocess_initializer_is_picklable(monkeypatch):
 
     df = s03.extract_features_for_split(
         samples,
-        dc_threshold=2.2e6,
+        dc_threshold=0.2e6,
         ac_dc_threshold=0.35,
         n_workers=2,
     )

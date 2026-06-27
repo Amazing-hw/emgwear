@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import joblib
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -540,3 +541,20 @@ def test_group_cv_search_falls_back_when_group_folds_make_single_class_train():
     assert summary["strategy"] == "staged_group_cv"
     assert summary["group_source"] == "stratified_fallback"
     assert all(r["cv_folds_completed"] > 0 for r in records)
+
+
+def test_model_search_rejects_validation_based_strategy():
+    args = SimpleNamespace(
+        model_search_strategy="staged_valid",
+    )
+
+    with pytest.raises(ValueError, match="staged_group_cv"):
+        s05.search_xgb_hyperparameters(
+            args,
+            np.array([[0.0], [1.0]]),
+            np.array([0, 1]),
+            np.array([[0.0], [1.0]]),
+            np.array([0, 1]),
+            scale_pos_weight=1.0,
+            groups=np.array(["a", "b"]),
+        )

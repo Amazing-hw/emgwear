@@ -11,6 +11,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import s06_deploy_eval as s06
 
 
+def test_s06_rejects_test_split_for_state_machine_optimization():
+    args = type("Args", (), {
+        "artifact_dir": "artifacts",
+        "split": "test",
+        "method": "state_machine",
+        "window_sec": 3,
+        "stride_sec": 1,
+        "optimize": True,
+        "optimize_split": "test",
+        "n_workers": 1,
+        "warmup_frames": 3,
+        "ood_alert_rate": 0.3,
+        "export_deploy": False,
+        "export_window_cache": False,
+        "window_output_root": "window_outputs",
+        "optimize_thresholds": "",
+    })()
+
+    with pytest.raises(ValueError, match="test split.*optimization"):
+        s06.main(args)
+
+
+def test_s07_rejects_test_split_for_postprocess_optimization():
+    import s07_postprocess_optimize as s07
+
+    args = type("Args", (), {
+        "artifact_dir": "artifacts",
+        "split": "test",
+        "cache_root": "window_outputs",
+        "fp_cost": 4.0,
+        "skip_initial_windows": 0,
+        "workers": 1,
+        "thresholds": "0.3,0.4",
+    })()
+
+    with pytest.raises(ValueError, match="test split.*postprocess"):
+        s07.main(args)
+
+
 def test_state_machine_zeroes_windows_when_stage1_disabled():
     cfg = {
         "alpha": 1.0,

@@ -44,12 +44,12 @@ SEARCH_BUDGET_PRESETS = {
     "balanced": {
         "model_search_max_candidates": 300,
         "model_search_stage2_top_k": 40,
-        "model_search_cv_repeats": 1,
+        "model_search_cv_repeats": 3,
     },
     "accuracy": {
         "model_search_max_candidates": 600,
         "model_search_stage2_top_k": 80,
-        "model_search_cv_repeats": 1,
+        "model_search_cv_repeats": 5,
     },
 }
 
@@ -90,7 +90,7 @@ def build_pipeline_commands(args):
             f' --model_search_max_candidates {_arg(args, "model_search_max_candidates", 300)}'
             f' --model_search_stage2_top_k {_arg(args, "model_search_stage2_top_k", 40)}'
             f' --model_search_cv_folds {_arg(args, "model_search_cv_folds", 3)}'
-            f' --model_search_cv_repeats {_arg(args, "model_search_cv_repeats", 1)}'
+            f' --model_search_cv_repeats {_arg(args, "model_search_cv_repeats", 3)}'
             f' --model_search_random_state {_arg(args, "model_search_random_state", 42)}'
             f' --model_search_accuracy_tolerance {_arg(args, "model_search_accuracy_tolerance", 0.0)}'
             f' --model_search_stage1_top_k {_arg(args, "model_search_stage1_top_k", 4)}'
@@ -1375,10 +1375,10 @@ def main():
                    help='Enable XGBoost hyperparameter search (default: enabled)')
     p.add_argument('--max_model_nodes', type=int, default=500)
     p.add_argument('--model_search_strategy', default='staged_group_cv',
-                   choices=['staged_group_cv', 'staged_valid'])
+                   choices=['staged_group_cv'])
     p.add_argument('--search_budget', default='balanced',
                    choices=sorted(SEARCH_BUDGET_PRESETS),
-                   help='模型搜索预算: fast 更快, balanced 默认, accuracy 放宽候选但保持 CV repeats=1')
+                   help='模型搜索预算: fast 更快(repeats=1), balanced 默认(repeats=3), accuracy 更稳(repeats=5)')
     p.add_argument('--model_search_max_candidates', type=int, default=None)
     p.add_argument('--model_search_stage2_top_k', type=int, default=None)
     p.add_argument('--model_search_cv_folds', type=int, default=3)

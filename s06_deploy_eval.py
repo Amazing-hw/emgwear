@@ -1799,6 +1799,12 @@ def main(args=None):
     if args is None:
         args = parser.parse_args()
 
+    if args.optimize and str(args.optimize_split).lower() == "test":
+        raise ValueError(
+            "test split cannot be used for optimization; use valid for "
+            "state-machine parameter search and reserve test for final reporting."
+        )
+
     with open(os.path.join(args.artifact_dir, "splits.json"), "r", encoding="utf-8") as f:
         split = json.load(f)
     with open(os.path.join(args.artifact_dir, "stage1_threshold.json"), "r", encoding="utf-8") as f:
