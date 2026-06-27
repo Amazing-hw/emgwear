@@ -369,6 +369,29 @@ emg_bp_clean:
   需要配合默认 --model_search_strategy staged_group_cv 使用，不使用 test，也不消耗 valid 做模型选择。
   默认值 8,10,12,15,18。
 
+--hard_negative_mining / --no-hard_negative_mining
+  默认开启 train-only OOF hard negative mining。
+  s05 会在 train 内部按 sample_name 做 OOF 预测，只从 target=0 且 OOF 正类概率高的窗口中选择 hard negative。
+  s05 会同时评估 baseline 与 hard-negative weighted 两个最终模型候选；
+  只有 weighted 候选在 valid accuracy/F1/precision/recall 排序上更好时才采用。
+  valid 只用于候选选择和窗口阈值固化，test 不参与。
+
+--hard_negative_min_probability
+  hard negative 的 OOF 概率下限。
+  默认不手动指定，此时使用当前模型在 valid 上固化出的窗口阈值作为下限。
+
+--hard_negative_top_percentile
+  额外选取负样本 OOF 概率最高的一部分。
+  默认 0.10。
+
+--hard_negative_weight
+  hard negative 在最终训练中的 sample_weight。
+  默认 3.0。
+
+--hard_negative_min_accuracy_delta
+  采用 hard-negative weighted 候选所需的 valid accuracy 最小提升。
+  默认 0.0。
+
 --skip
   跳过指定步骤，逗号分隔（如 s03,s04）。
   用于复用已有产物，跳过不需要重跑的步骤。
