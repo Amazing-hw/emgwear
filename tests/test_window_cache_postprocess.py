@@ -164,6 +164,37 @@ def test_window_stream_metrics_uses_same_median_states_as_details():
     assert stream["confusion_matrix"] == {"TN": 3, "FP": 0, "FN": 0, "TP": 0}
 
 
+def test_window_model_metrics_uses_same_warmup_window_count_as_stream_metrics():
+    cfg = {
+        "alpha": 1.0,
+        "T_on": 0.5,
+        "T_off": 0.2,
+        "K_on": 1,
+        "K_off": 1,
+        "cooldown_sec": 0,
+        "median_k": 1,
+    }
+    results = [{
+        "sample_name": "sample_a",
+        "target": 1,
+        "stage1_pass": True,
+        "fallback": False,
+        "window_probs": [0.9, 0.9, 0.9, 0.9],
+        "window_preds": [1, 1, 1, 1],
+        "quality_metas": [{}, {}, {}, {}],
+        "stage1_frame_results": [True, True, True, True],
+    }]
+
+    model = s06.compute_window_model_metrics(results, warmup_frames=2)
+    stream = s06.compute_window_stream_metrics(
+        results, cfg, warmup_frames=2, stride_sec=1.0, model_threshold=0.5
+    )
+
+    assert model["warmup_frames"] == 2
+    assert model["skipped_warmup_windows"] == 2
+    assert model["total_windows"] == stream["total_windows"] == 2
+
+
 def test_window_cache_roundtrip_and_postprocess():
     result = {
         "sample_name": "case/001",
@@ -409,6 +440,94 @@ def test_postprocess_metrics_match_sklearn_definitions():
     assert metrics["recall"] == recall_score(y_true, y_pred, zero_division=0)
     assert metrics["f1"] == f1_score(y_true, y_pred, zero_division=0)
     assert metrics["window_accuracy"] == accuracy_score(win_true, win_pred)
+
+
+def test_fast_postprocess_metrics_match_reference_evaluator():
+    import s07_postprocess_optimize as s07
+
+    caches = [
+        {
+            "sample_name": "pos_mixed",
+            "target": 1,
+            "prob_raw": np.array([0.3, 0.8, 0.7, 0.2], dtype=float),
+            "stage1_enabled": np.array([1, 1, 0, 1], dtype=np.int8),
+            "quality": np.array([1.0, 0.5, 1.0, 0.8], dtype=float),
+            "model_threshold": 0.5,
+            "stride_sec": 1.0,
+        },
+        {
+            "sample_name": "neg_mixed",
+            "target": 0,
+            "prob_raw": np.array([0.9, 0.4, 0.6], dtype=float),
+            "stage1_enabled": np.array([1, 1, 1], dtype=np.int8),
+            "quality": np.array([1.0, 1.0, 0.6], dtype=float),
+            "model_threshold": 0.55,
+            "stride_sec": 1.0,
+        },
+    ]
+    params_list = [
+        {
+            "alpha": 0.25,
+            "T_on": 0.55,
+            "T_off": 0.2,
+            "K_on": 1,
+            "K_off": 1,
+            "cooldown_sec": 0,
+            "median_k": 1,
+            "threshold_offset": -0.1,
+        },
+        {
+            "alpha": 0.6,
+            "T_on": 0.65,
+            "T_off": 0.35,
+            "K_on": 2,
+            "K_off": 1,
+            "cooldown_sec": 2,
+            "median_k": 3,
+            "threshold_offset": 0.1,
+        },
+    ]
+
+    fast_caches = s07.prepare_fast_search_caches(
+        caches,
+        threshold_offsets=[-0.1, 0.1],
+        median_ks=[1, 3],
+        skip_initial_windows=0,
+    )
+
+    for params in params_list:
+        assert s07.evaluate_params_fast(fast_caches, params) == s07.evaluate_params(caches, params)
+
+
+def test_search_postprocess_uses_fast_precomputed_evaluator(monkeypatch):
+    import s07_postprocess_optimize as s07
+
+    caches = [
+        {
+            "sample_name": "hard_pos",
+            "target": 1,
+            "prob_raw": np.array([0.8, 0.2], dtype=float),
+            "stage1_enabled": np.array([1, 1], dtype=np.int8),
+            "quality": np.array([1.0, 1.0], dtype=float),
+            "model_threshold": 0.5,
+            "stride_sec": 1.0,
+        }
+    ]
+
+    def fail_if_reference_path_is_used(*args, **kwargs):
+        raise AssertionError("search_postprocess should use precomputed fast evaluator")
+
+    monkeypatch.setattr(s07, "run_postprocess_on_cache", fail_if_reference_path_is_used)
+
+    best, results = s07.search_postprocess(
+        caches,
+        threshold_offsets=[0.0],
+        max_candidates=2,
+        progress_interval=10,
+    )
+
+    assert best is not None
+    assert len(results) == 2
 
 
 def test_postprocess_export_includes_median_k():

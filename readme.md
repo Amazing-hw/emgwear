@@ -252,7 +252,7 @@ threshold_offsets = -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 max_all_correct_regressions = 0
 ```
 
-`s08` 会把 `--n_workers` 传给 `s07` 的 `--workers`，后处理搜参会打印候选数、样本数、worker 数、进度、耗时、ETA 和当前最优分数。
+`s08` 会把 `--n_workers` 传给 `s07` 的 `--workers`。`s07` 的 exact 搜参会预计算 `(threshold_offset, median_k)` 窗口序列，避免每个候选重复做阈值变换和中值滤波；运行时会打印候选数、样本数、worker 数、预计算序列数、进度、耗时、ETA 和当前最优分数。
 
 hard sample 定义：
 

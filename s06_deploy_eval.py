@@ -821,9 +821,10 @@ def compute_sample_metrics(results, method, cfg, model_threshold, stride_sec=1.0
     return summary, details
 
 
-def compute_window_model_metrics(results):
+def compute_window_model_metrics(results, warmup_frames=0):
     y_true, y_pred = [], []
     samples_with_no_windows = 0
+    skipped_windows = 0
     total_input_samples = len(results)
     stage1_pass_samples = 0
     for r in results:
@@ -833,7 +834,9 @@ def compute_window_model_metrics(results):
             continue
         stage1_pass_samples += 1
         t = int(r["target"])
-        for p in wp:
+        start = min(max(0, int(warmup_frames)), len(wp))
+        skipped_windows += start
+        for p in wp[start:]:
             y_true.append(t)
             y_pred.append(int(p))
 
@@ -842,6 +845,8 @@ def compute_window_model_metrics(results):
             "total_input_samples": total_input_samples,
             "stage1_pass_samples": stage1_pass_samples,
             "samples_with_no_windows": samples_with_no_windows,
+            "warmup_frames": int(warmup_frames),
+            "skipped_warmup_windows": int(skipped_windows),
             "total_windows": 0,
             "confusion_matrix": {"TN": 0, "FP": 0, "FN": 0, "TP": 0},
             "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0,
@@ -854,6 +859,8 @@ def compute_window_model_metrics(results):
         "total_input_samples": total_input_samples,
         "stage1_pass_samples": stage1_pass_samples,
         "samples_with_no_windows": samples_with_no_windows,
+        "warmup_frames": int(warmup_frames),
+        "skipped_warmup_windows": int(skipped_windows),
         "total_windows": int(len(y_true_a)),
         "confusion_matrix": {"TN": tn, "FP": fp, "FN": fn, "TP": tp},
         "accuracy": float(accuracy_score(y_true_a, y_pred_a)),

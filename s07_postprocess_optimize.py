@@ -53,8 +53,8 @@ def _init_score_worker(payload_bytes):
 
 
 def _score_grid_point(params):
-    caches, skip_initial_windows, fp_cost = _SCORE_DATA
-    metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
+    prepared_caches, fp_cost = _SCORE_DATA
+    metrics = evaluate_params_fast(prepared_caches, params)
     score = score_metrics(metrics, fp_cost=fp_cost)
     return {**params, **metrics, "score": float(score)}
 
@@ -278,6 +278,116 @@ def iter_param_grid(threshold_offsets=None, include_threshold=True):
         }
 
 
+def _unique_param_values(grid, key):
+    values = []
+    for params in grid:
+        value = params[key]
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _causal_median_filter_fast(values, k):
+    k = int(k or 1)
+    arr = np.asarray(values, dtype=np.float64)
+    if k <= 1 or arr.size == 0:
+        return arr
+    out = np.empty_like(arr, dtype=np.float64)
+    for i in range(arr.size):
+        start = max(0, i - k + 1)
+        out[i] = float(np.median(arr[start:i + 1]))
+    return out
+
+
+def prepare_fast_search_caches(caches, threshold_offsets, median_ks, skip_initial_windows=0):
+    fast_caches = []
+    offsets = [float(x) for x in threshold_offsets]
+    median_ks = [int(x) for x in median_ks]
+    for cache in caches:
+        sl = _window_slice(cache, skip_initial_windows)
+        raw = np.asarray(cache["prob_raw"], dtype=np.float64)[sl]
+        enabled = np.asarray(cache["stage1_enabled"], dtype=np.int8)[sl].astype(bool)
+        quality = np.clip(np.asarray(cache["quality"], dtype=np.float64)[sl], 0.0, 1.0)
+        model_threshold = float(cache["model_threshold"])
+
+        series = {}
+        window_preds = {}
+        for offset in offsets:
+            adjusted_threshold = float(np.clip(model_threshold + offset, 0.02, 0.98))
+            probs = np.clip(raw - adjusted_threshold + 0.5, 0.0, 1.0)
+            probs = np.where(enabled, probs, 0.0)
+            for median_k in median_ks:
+                filtered = _causal_median_filter_fast(probs, median_k)
+                key = (float(offset), int(median_k))
+                series[key] = filtered
+                window_preds[key] = (filtered >= 0.5).astype(np.int8)
+
+        skipped = min(max(0, int(skip_initial_windows)), len(cache["prob_raw"]))
+        fast_caches.append({
+            "sample_name": cache.get("sample_name"),
+            "target": int(cache["target"]),
+            "stride_sec": float(cache["stride_sec"]),
+            "quality": quality,
+            "series": series,
+            "window_preds": window_preds,
+            "skipped_initial_windows": int(skipped),
+        })
+    return fast_caches
+
+
+def _run_fast_state_machine(prepared_cache, params):
+    key = (float(params.get("threshold_offset", 0.0)), int(params.get("median_k", 1)))
+    probs = prepared_cache["series"][key]
+    quality = prepared_cache["quality"]
+    if probs.size == 0:
+        return 0, np.asarray([], dtype=np.int8)
+
+    alpha = float(params.get("alpha", 0.4))
+    t_on = float(params.get("T_on", 0.75))
+    t_off = float(params.get("T_off", 0.35))
+    k_on = int(params.get("K_on", 5))
+    k_off = int(params.get("K_off", 5))
+    cooldown_sec = float(params.get("cooldown_sec", 5))
+    stride_sec = float(prepared_cache["stride_sec"])
+    cooldown_steps = int(cooldown_sec / stride_sec) if stride_sec > 0 else int(cooldown_sec)
+
+    state = 0
+    score = 0.0
+    on_count = 0
+    off_count = 0
+    steps_since_flip = 999
+    states = np.empty(probs.size, dtype=np.int8)
+
+    for i, p in enumerate(probs):
+        eff_alpha = alpha * float(quality[i]) if i < quality.size else alpha
+        score = eff_alpha * float(p) + (1.0 - eff_alpha) * score
+        steps_since_flip += 1
+
+        if state == 0:
+            if score > t_on:
+                on_count += 1
+            else:
+                on_count = max(0, on_count - 1)
+            if on_count >= k_on and steps_since_flip >= cooldown_steps:
+                state = 1
+                on_count = 0
+                off_count = 0
+                steps_since_flip = 0
+        else:
+            if score < t_off:
+                off_count += 1
+            else:
+                off_count = max(0, off_count - 1)
+            if off_count >= k_off and steps_since_flip >= cooldown_steps:
+                state = 0
+                on_count = 0
+                off_count = 0
+                steps_since_flip = 0
+        states[i] = state
+
+    return int(states[-1]), states
+
+
 def evaluate_params(caches, params, skip_initial_windows=0):
     n_samples = 0
     sample_correct = 0
@@ -332,6 +442,61 @@ def evaluate_params(caches, params, skip_initial_windows=0):
     }
 
 
+def evaluate_params_fast(prepared_caches, params):
+    n_samples = 0
+    sample_correct = 0
+    tp = fp = fn = 0
+    neg = sample_fp = 0
+    n_windows = 0
+    window_correct = 0
+    skipped = 0
+    key = (float(params.get("threshold_offset", 0.0)), int(params.get("median_k", 1)))
+
+    for cache in prepared_caches:
+        target = int(cache["target"])
+        pred, states = _run_fast_state_machine(cache, params)
+        n_samples += 1
+        sample_correct += int(pred == target)
+        if target == 1 and pred == 1:
+            tp += 1
+        elif target == 0 and pred == 1:
+            fp += 1
+        elif target == 1 and pred == 0:
+            fn += 1
+        if target == 0:
+            neg += 1
+            sample_fp += int(pred == 1)
+
+        n_windows += int(states.size)
+        if states.size:
+            window_correct += int(np.sum(states == target))
+        skipped += int(cache.get("skipped_initial_windows", 0))
+
+    if n_samples == 0:
+        return {
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "window_accuracy": 0.0,
+            "sample_fp_rate": 0.0,
+        }
+
+    precision = float(tp / (tp + fp)) if (tp + fp) else 0.0
+    recall = float(tp / (tp + fn)) if (tp + fn) else 0.0
+    f1 = float(2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+    fp_rate = float(sample_fp / neg) if neg else 0.0
+    return {
+        "accuracy": float(sample_correct / n_samples),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "window_accuracy": float(window_correct / n_windows) if n_windows else 0.0,
+        "sample_fp_rate": fp_rate,
+        "skipped_initial_windows": int(skipped),
+    }
+
+
 def score_metrics(metrics, fp_cost=1.5):
     return (
         metrics["accuracy"]
@@ -351,10 +516,19 @@ def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=No
     if total == 0:
         empty = pd.DataFrame()
         return None, empty
+    median_ks = _unique_param_values(grid, "median_k")
+    offsets = _unique_param_values(grid, "threshold_offset")
+    prepared_caches = prepare_fast_search_caches(
+        caches,
+        threshold_offsets=offsets,
+        median_ks=median_ks,
+        skip_initial_windows=skip_initial_windows,
+    )
 
     print(
         "[s07] 搜参开始: "
         f"candidates={total}, samples={len(caches)}, workers={n_workers}, "
+        f"precomputed_series={len(offsets) * len(median_ks)}, "
         f"progress_interval={max(1, int(progress_interval or 1))}",
         flush=True,
     )
@@ -365,7 +539,7 @@ def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=No
         rows = []
         best = None
         for done, params in enumerate(grid, start=1):
-            metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
+            metrics = evaluate_params_fast(prepared_caches, params)
             score = score_metrics(metrics, fp_cost=fp_cost)
             row = {**params, **metrics, "score": float(score)}
             rows.append(row)
@@ -377,7 +551,7 @@ def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=No
         print(f"[s07] 搜参完成: best_score={float(best['score']):.6f}", flush=True)
         return best, pd.DataFrame(rows).sort_values("score", ascending=False)
 
-    payload = (caches, skip_initial_windows, float(fp_cost))
+    payload = (prepared_caches, float(fp_cost))
     payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
     chunksize = max(1, len(grid) // (n_workers * 4))
 
