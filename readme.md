@@ -329,7 +329,7 @@ python s06_deploy_eval.py --artifact_dir artifacts --split valid --export_window
 后处理搜参：
 
 ```bash
-python s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 1.5 --hard_samples_only --threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
+python s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 1.5 --hard_samples_only --threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 ```
 
 最终 test 评估和部署导出：
@@ -509,7 +509,7 @@ python s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with
 调整后处理阈值 offset 搜索范围：
 
 ```bash
-python s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess --postprocess_threshold_offsets -0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4
+python s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess --postprocess_threshold_offsets=-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4
 ```
 
 换一个全新输出目录，避免读取旧配置：

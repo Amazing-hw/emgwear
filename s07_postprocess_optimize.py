@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import pickle
+import sys
 from itertools import product
 from concurrent.futures import ProcessPoolExecutor
 
@@ -18,6 +19,31 @@ from s06_deploy_eval import apply_postprocess
 
 # Module-level storage for worker processes (ProcessPoolExecutor initializer pattern)
 _SCORE_DATA = None
+
+
+def _looks_like_float_csv(value):
+    if not isinstance(value, str) or not value.startswith("-"):
+        return False
+    try:
+        for part in value.split(","):
+            float(part.strip())
+    except ValueError:
+        return False
+    return True
+
+
+def _normalize_negative_csv_options(argv, option_names):
+    normalized = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in option_names and i + 1 < len(argv) and _looks_like_float_csv(argv[i + 1]):
+            normalized.append(f"{token}={argv[i + 1]}")
+            i += 2
+            continue
+        normalized.append(token)
+        i += 1
+    return normalized
 
 
 def _init_score_worker(payload_bytes):
@@ -413,7 +439,7 @@ def main(args=None):
     parser.add_argument("--max_all_correct_regressions", type=int, default=0)
 
     if args is None:
-        args = parser.parse_args()
+        args = parser.parse_args(_normalize_negative_csv_options(sys.argv[1:], {"--threshold_offsets"}))
 
     search_splits = parse_csv_splits(getattr(args, "search_splits", "") or getattr(args, "split", "valid"))
     if not search_splits:

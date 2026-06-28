@@ -35,6 +35,32 @@ from datetime import timedelta
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PYTHON = sys.executable
 
+
+def _looks_like_float_csv(value):
+    if not isinstance(value, str) or not value.startswith("-"):
+        return False
+    try:
+        for part in value.split(","):
+            float(part.strip())
+    except ValueError:
+        return False
+    return True
+
+
+def _normalize_negative_csv_options(argv, option_names):
+    normalized = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in option_names and i + 1 < len(argv) and _looks_like_float_csv(argv[i + 1]):
+            normalized.append(f"{token}={argv[i + 1]}")
+            i += 2
+            continue
+        normalized.append(token)
+        i += 1
+    return normalized
+
+
 SEARCH_BUDGET_PRESETS = {
     "fast": {
         "model_search_max_candidates": 150,
@@ -127,7 +153,7 @@ def build_pipeline_commands(args):
         's06_opt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --optimize --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_cache_train': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split train --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_window_cache --window_output_root window_outputs',
         's06_cache_valid': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_window_cache --window_output_root window_outputs',
-        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --search_splits train,valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 1.5)} --hard_samples_only --threshold_offsets {_arg(args, "postprocess_threshold_offsets", "-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3")}',
+        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --search_splits train,valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 1.5)} --hard_samples_only --threshold_offsets={_arg(args, "postprocess_threshold_offsets", "-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3")}',
         's06_eval': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_xpt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_deploy',
         's06_feat': '__extractor__',
@@ -1448,7 +1474,7 @@ def main():
     p.add_argument('--with_postprocess', action='store_true',
                    help='等效于 --accuracy_first_optimize --export_window_cache --optimize_postprocess')
 
-    args = p.parse_args()
+    args = p.parse_args(_normalize_negative_csv_options(sys.argv[1:], {"--postprocess_threshold_offsets"}))
 
     # ── 步骤定义 ──
     all_steps = _step_list()

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import s03_extract_feature_pool as s03
 import s04_feature_selection as s04
 import s08_run_pipeline as s08
+import s07_postprocess_optimize as s07
 
 
 class FakeBooster:
@@ -61,7 +62,18 @@ def test_pipeline_commands_include_npz_cache_postprocess_path():
     assert "--cache_root window_outputs" in commands["s07_post"]
     assert "--search_splits train,valid" in commands["s07_post"]
     assert "--hard_samples_only" in commands["s07_post"]
-    assert "--threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in commands["s07_post"]
+    assert "--threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in commands["s07_post"]
+
+
+def test_negative_csv_cli_values_are_normalized_before_argparse():
+    assert s08._normalize_negative_csv_options(
+        ["--postprocess_threshold_offsets", "-0.4,-0.3,0,0.3"],
+        {"--postprocess_threshold_offsets"},
+    ) == ["--postprocess_threshold_offsets=-0.4,-0.3,0,0.3"]
+    assert s07._normalize_negative_csv_options(
+        ["--threshold_offsets", "-0.4,-0.3,0,0.3"],
+        {"--threshold_offsets"},
+    ) == ["--threshold_offsets=-0.4,-0.3,0,0.3"]
 
 
 def test_pipeline_postprocess_search_stays_on_valid_when_final_eval_uses_test():
@@ -187,7 +199,7 @@ def test_readme_documents_current_postprocess_search_flow():
     assert "s06_cache_train" in readme
     assert "--search_splits train,valid" in readme
     assert "--hard_samples_only" in readme
-    assert "--threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in readme
+    assert "--threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in readme
     assert "postprocess_search_train_valid.csv" in readme
 
 
