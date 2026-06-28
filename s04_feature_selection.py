@@ -567,7 +567,7 @@ def stability_selection(df, feature_cols, max_splits=5, seeds=None, n_workers=No
 
     X = df[feature_cols].values.astype(float)
     y = df["target"].values.astype(int)
-    groups = df["sample_name"].values
+    groups = df["sample_name"].astype(str).values
 
     unique_groups = np.unique(groups)
     n_splits = min(max_splits, len(unique_groups))

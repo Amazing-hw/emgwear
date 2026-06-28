@@ -132,3 +132,34 @@ def test_fast_group_preselection_skips_zero_limit_tiny_groups():
     assert "PPG_mean" not in selected
     assert "PPG_std" not in selected
     assert "EMG0_MAV" in selected
+
+
+def test_stability_selection_handles_mixed_type_sample_names():
+    import s04_feature_selection as s04
+
+    rng = np.random.default_rng(789)
+    n = 24
+    target = np.tile([0, 1], n // 2)
+    sample_names = [
+        i if i % 2 == 0 else f"s{i}"
+        for i in range(n)
+    ]
+    df = pd.DataFrame({
+        "sample_name": sample_names,
+        "h5_file": ["mixed.h5"] * n,
+        "target": target,
+        "start_100hz": np.arange(n),
+        "F0": target + rng.normal(scale=0.01, size=n),
+        "F1": rng.normal(size=n),
+    })
+
+    summary = s04.stability_selection(
+        df,
+        ["F0", "F1"],
+        max_splits=3,
+        seeds=[42],
+        n_workers=1,
+        min_fold_auc=0.0,
+    )
+
+    assert {item["feature"] for item in summary} == {"F0", "F1"}
