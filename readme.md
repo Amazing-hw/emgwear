@@ -64,8 +64,9 @@ s01 -> s02 -> s03 -> s04 -> s05 -> s06_eval -> s06_xpt -> s06_feat -> s06_plot -
 这条默认命令不会运行：
 
 ```text
+s06_cache_train    # 导出 train 的逐窗 NPZ 缓存
 s06_cache_valid    # 导出 valid 的逐窗 NPZ 缓存
-s07_post           # 基于 NPZ 缓存做后处理参数搜索
+s07_post           # 基于 train+valid NPZ 缓存中的窗口非全对样本做后处理参数搜索
 s06_opt            # s06 内置的状态机参数网格搜索
 ```
 
@@ -289,20 +290,20 @@ emg_bp_clean:
   默认 staged_group_cv。
   含义是先从高预算细粒度空间确定性采样候选，再用 train 内部 group-aware repeated CV 复评。
 
---runtime_profile
-  运行预算预设 (fast / balanced / thorough)。
-  fast: max_candidates=120, stage2_top_k=16，适合快速验证链路。
-  balanced: max_candidates=180, stage2_top_k=24，默认设置，在运行时间和稳定性之间折中。
-  thorough: max_candidates=360, stage2_top_k=48，放宽搜索空间并加强 train 内部稳定性评估。
+--search_budget
+  模型搜索预算预设 (fast / balanced / accuracy)。
+  fast: max_candidates=150, stage2_top_k=20, cv_repeats=1，适合快速验证链路。
+  balanced: max_candidates=300, stage2_top_k=40, cv_repeats=3，默认设置，在运行时间和稳定性之间折中。
+  accuracy: max_candidates=600, stage2_top_k=80, cv_repeats=5，放宽搜索空间并加强 train 内部稳定性评估。
   手动传入 --model_search_max_candidates / --model_search_stage2_top_k 会覆盖预设值。
 
 --model_search_max_candidates
   Stage A 最多采样多少个候选。
-  默认由 --runtime_profile balanced 给出，即 180。
+  默认由 --search_budget balanced 给出，即 300。
 
 --model_search_stage2_top_k
   Stage B 进入 group CV 复评的候选数。
-  默认由 --runtime_profile balanced 给出，即 24。
+  默认由 --search_budget balanced 给出，即 40。
 
 --model_search_cv_folds
   group CV 折数。
@@ -480,21 +481,25 @@ artifacts/postprocess_opt/
 
 ## 手动导出 NPZ
 
-如果要为后处理搜参或窗口诊断导出 valid 的逐窗结果：
+如果要为后处理搜参或窗口诊断导出 train 和 valid 的逐窗结果：
 
 ```bash
+python new_new/s06_deploy_eval.py --artifact_dir artifacts --split train --export_window_cache --window_output_root window_outputs
 python new_new/s06_deploy_eval.py --artifact_dir artifacts --split valid --export_window_cache --window_output_root window_outputs
 ```
 
 如果在 `new_new` 目录下：
 
 ```bash
+python s06_deploy_eval.py --artifact_dir artifacts --split train --export_window_cache --window_output_root window_outputs
 python s06_deploy_eval.py --artifact_dir artifacts --split valid --export_window_cache --window_output_root window_outputs
 ```
 
 输出：
 
 ```text
+artifacts/window_outputs/train/*.npz
+artifacts/window_outputs/train/manifest.csv
 artifacts/window_outputs/valid/*.npz
 artifacts/window_outputs/valid/manifest.csv
 ```
@@ -526,34 +531,50 @@ feature_names_json
 
 ## 手动后处理搜参
 
-基于上一步 NPZ 缓存搜索状态机参数：
+基于上一步 train+valid NPZ 缓存搜索状态机参数。默认只用窗口级不是全对的样本参与状态机搜参，同时在全体 train+valid 样本上回放 guardrail；如果窗口全对样本被新参数改错，默认不会写回最终配置。
 
 ```bash
-python new_new/s07_postprocess_optimize.py --artifact_dir artifacts --split valid --cache_root window_outputs --fp_cost 4.0
+python new_new/s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 4.0 --hard_samples_only --threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 ```
 
 如果在 `new_new` 目录下：
 
 ```bash
-python s07_postprocess_optimize.py --artifact_dir artifacts --split valid --cache_root window_outputs --fp_cost 4.0
+python s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 4.0 --hard_samples_only --threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 ```
 
 可选：
 
 ```bash
-python new_new/s07_postprocess_optimize.py --artifact_dir artifacts --split valid --cache_root window_outputs --fp_cost 4.0 --skip_initial_windows 1 --thresholds 0.3,0.4,0.5,0.6,0.7,0.8
+python new_new/s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 4.0 --skip_initial_windows 1 --thresholds 0.3,0.4,0.5,0.6,0.7,0.8
 ```
 
 参数含义：
 
 ```text
 --split
-  用哪个 split 的缓存做搜参。
-  推荐 valid，不建议用 test 搜参。
+  旧兼容参数。只要 --search_splits 非空，实际以后者为准。
+
+--search_splits
+  用哪些 split 的缓存做后处理搜参。
+  默认 train,valid。禁止使用 test，test 只用于最终报告。
 
 --cache_root
   NPZ 缓存目录名。
-  实际读取路径是 artifacts/<cache_root>/<split>/。
+  实际读取路径是 artifacts/<cache_root>/<split>/，多 split 会分别读取后合并。
+
+--hard_samples_only / --no-hard_samples_only
+  默认开启。按原始固化 model_threshold 判断窗口级结果，只让“窗口非全对”的样本参与状态机搜参。
+  窗口全对样本不参与搜索，但会在全体 train+valid 回放中作为 guardrail。
+
+--threshold_offsets
+  与状态机参数联合搜索的模型阈值偏移。
+  默认 -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3，并裁剪到 [0.02, 0.98]。
+  搜参时状态机输入使用 clip(prob_raw - (model_threshold + threshold_offset) + 0.5, 0, 1)。
+
+--max_all_correct_regressions
+  窗口全对样本允许被最终状态机参数改错的最大数量，默认 0。
+  超过该数量时，s07 仍保存诊断结果，但不会写回 final_model_config.json。
 
 --fp_cost
   假阳性惩罚权重。
@@ -570,14 +591,14 @@ python new_new/s07_postprocess_optimize.py --artifact_dir artifacts --split vali
 输出：
 
 ```text
-artifacts/postprocess_opt/postprocess_search_valid.csv
-artifacts/postprocess_opt/window_threshold_scan_valid.csv
-artifacts/postprocess_opt/window_error_report_valid.csv
-artifacts/postprocess_opt/window_error_summary_valid.csv
-artifacts/postprocess_opt/postprocess_optimized_valid.json
+artifacts/postprocess_opt/postprocess_search_train_valid.csv
+artifacts/postprocess_opt/window_threshold_scan_train_valid.csv
+artifacts/postprocess_opt/window_error_report_train_valid.csv
+artifacts/postprocess_opt/window_error_summary_train_valid.csv
+artifacts/postprocess_opt/postprocess_optimized_train_valid.json
 ```
 
-同时，`s07` 会把最优 `postprocess` 写入：
+如果 guardrail 通过，`s07` 会把最优 `postprocess` 写入：
 
 ```text
 artifacts/final_model_config.json
@@ -928,20 +949,21 @@ python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifact
 如果默认模型搜索太慢：
 
 ```bash
-python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --runtime_profile fast
+python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --search_budget fast
 ```
 
 如果希望放宽搜索空间但仍控制运行时间：
 
 ```bash
-python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess --runtime_profile thorough
+python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --with_postprocess --search_budget accuracy
 ```
 
 如果需要手动分步做后处理搜参（等价于 `--with_postprocess`）：
 
 ```bash
+python new_new/s06_deploy_eval.py --artifact_dir artifacts --split train --export_window_cache --window_output_root window_outputs
 python new_new/s06_deploy_eval.py --artifact_dir artifacts --split valid --export_window_cache --window_output_root window_outputs
-python new_new/s07_postprocess_optimize.py --artifact_dir artifacts --split valid --cache_root window_outputs --fp_cost 4.0
+python new_new/s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 4.0 --hard_samples_only --threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 python new_new/s08_run_pipeline.py --artifact_dir artifacts --skip s01,s02,s03,s04,s05
 ```
 

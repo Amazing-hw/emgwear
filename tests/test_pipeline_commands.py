@@ -53,11 +53,15 @@ def test_pipeline_commands_include_npz_cache_postprocess_path():
 
     commands = s08.build_pipeline_commands(args)
 
+    assert "--export_window_cache" in commands["s06_cache_train"]
+    assert "--split train" in commands["s06_cache_train"]
     assert "--export_window_cache" in commands["s06_cache_valid"]
     assert "--split valid" in commands["s06_cache_valid"]
     assert "s07_postprocess_optimize" in commands["s07_post"]
     assert "--cache_root window_outputs" in commands["s07_post"]
-    assert "--split valid" in commands["s07_post"]
+    assert "--search_splits train,valid" in commands["s07_post"]
+    assert "--hard_samples_only" in commands["s07_post"]
+    assert "--threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in commands["s07_post"]
 
 
 def test_pipeline_postprocess_search_stays_on_valid_when_final_eval_uses_test():
@@ -74,8 +78,9 @@ def test_pipeline_postprocess_search_stays_on_valid_when_final_eval_uses_test():
 
     commands = s08.build_pipeline_commands(args)
 
+    assert "--split train" in commands["s06_cache_train"]
     assert "--split valid" in commands["s06_cache_valid"]
-    assert "--split valid" in commands["s07_post"]
+    assert "--search_splits train,valid" in commands["s07_post"]
     assert "--split test" in commands["s06_eval"]
     assert "--split test" in commands["s06_xpt"]
 
@@ -168,6 +173,24 @@ def test_fast_search_budget_reduces_candidates_for_short_runs():
     assert "--model_search_cv_repeats 1" in cmd
 
 
+def test_readme_documents_current_search_budget_cli():
+    readme = (Path(__file__).resolve().parents[1] / "readme.md").read_text(encoding="utf-8")
+
+    assert "--search_budget" in readme
+    assert "--runtime_profile" not in readme
+    assert "thorough" not in readme
+
+
+def test_readme_documents_current_postprocess_search_flow():
+    readme = (Path(__file__).resolve().parents[1] / "readme.md").read_text(encoding="utf-8")
+
+    assert "s06_cache_train" in readme
+    assert "--search_splits train,valid" in readme
+    assert "--hard_samples_only" in readme
+    assert "--threshold_offsets -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in readme
+    assert "postprocess_search_train_valid.csv" in readme
+
+
 def test_default_pipeline_steps_skip_postprocess_search_before_final_eval():
     steps = s08.default_pipeline_steps()
     step_keys = [key for key, _, _ in steps]
@@ -175,6 +198,7 @@ def test_default_pipeline_steps_skip_postprocess_search_before_final_eval():
     default_keys = [key for key, _, enabled in steps if enabled]
 
     assert "s06_opt" not in default_keys
+    assert "s06_cache_train" not in default_keys
     assert "s06_cache_valid" not in default_keys
     assert "s07_post" not in default_keys
     assert step_keys.index("s05") < step_keys.index("s06_eval")
@@ -429,7 +453,11 @@ def test_deploy_cookbook_uses_current_postprocess_and_clip_bounds():
         cookbook = json.loads((out_dir / "deploy_cookbook.json").read_text(encoding="utf-8"))
         deploy_xgb = json.loads((out_dir / "deploy_xgboost.json").read_text(encoding="utf-8"))
 
-        assert cookbook["D_stage3_postprocess"]["params"] == postprocess
+        params = cookbook["D_stage3_postprocess"]["params"]
+        for key, value in postprocess.items():
+            assert params[key] == value
+        assert params["threshold_offset"] == 0.0
+        assert params["threshold_transform"] == "disabled"
         assert deploy_xgb["fill_values"] == bundle["fill_values"]
         assert deploy_xgb["clip_bounds"] == bundle["clip_bounds"]
     finally:

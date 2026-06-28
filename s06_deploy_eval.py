@@ -691,6 +691,13 @@ def apply_postprocess(window_probs, quality_metas, method, cfg, model_threshold,
     if probs.size == 0:
         return 0, [], [], []
 
+    use_threshold_transform = bool(cfg) and "threshold_offset" in cfg
+    threshold_offset = float(cfg.get("threshold_offset", 0.0)) if use_threshold_transform else 0.0
+    if use_threshold_transform:
+        adjusted_threshold = float(np.clip(float(model_threshold) + threshold_offset, 0.02, 0.98))
+        probs = np.clip(probs - adjusted_threshold + 0.5, 0.0, 1.0)
+        model_threshold = 0.5
+
     if method == "gated":
         method = "state_machine"
 
@@ -739,6 +746,12 @@ def serialize_postprocess_config(postprocess_cfg):
                 ("K_on", int(postprocess_cfg.get("K_on", 5))),
                 ("K_off", int(postprocess_cfg.get("K_off", 5))),
                 ("cooldown_sec", float(postprocess_cfg.get("cooldown_sec", 5))),
+                ("threshold_offset", float(postprocess_cfg.get("threshold_offset", 0.0))),
+                ("threshold_transform", postprocess_cfg.get(
+                    "threshold_transform",
+                    "disabled" if "threshold_offset" not in postprocess_cfg
+                    else "clip(prob_raw - (model_threshold + threshold_offset) + 0.5, 0, 1)",
+                )),
             ])),
         ])),
     ])
@@ -1711,6 +1724,12 @@ def export_deploy_artifacts(artifact_dir):
                 ("K_on", int(postprocess_cfg.get("K_on", 5))),
                 ("K_off", int(postprocess_cfg.get("K_off", 5))),
                 ("cooldown_sec", float(postprocess_cfg.get("cooldown_sec", 5))),
+                ("threshold_offset", float(postprocess_cfg.get("threshold_offset", 0.0))),
+                ("threshold_transform", postprocess_cfg.get(
+                    "threshold_transform",
+                    "disabled" if "threshold_offset" not in postprocess_cfg
+                    else "clip(prob_raw - (model_threshold + threshold_offset) + 0.5, 0, 1)",
+                )),
             ])),
         ])),
         ("quality_scoring", OrderedDict([
@@ -1754,6 +1773,12 @@ def export_deploy_artifacts(artifact_dir):
             ("K_on", int(postprocess_cfg.get("K_on", 5))),
             ("K_off", int(postprocess_cfg.get("K_off", 5))),
             ("cooldown_sec", float(postprocess_cfg.get("cooldown_sec", 5))),
+            ("threshold_offset", float(postprocess_cfg.get("threshold_offset", 0.0))),
+            ("threshold_transform", postprocess_cfg.get(
+                "threshold_transform",
+                "disabled" if "threshold_offset" not in postprocess_cfg
+                else "clip(prob_raw - (model_threshold + threshold_offset) + 0.5, 0, 1)",
+            )),
         ])),
         ("bundle_fingerprint", bundle.get("fingerprint", {})),
     ])

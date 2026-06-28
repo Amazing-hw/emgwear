@@ -125,8 +125,9 @@ def build_pipeline_commands(args):
         's04': f'"{PYTHON}" "{_script_path("s04_feature_selection")}" --artifact_dir "{args.artifact_dir}" --max_features {args.max_features} --n_workers {args.n_workers}',
         's05': f'"{PYTHON}" "{_script_path("s05_train_final_model")}" --artifact_dir "{args.artifact_dir}"{s05_extra}',
         's06_opt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --optimize --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
+        's06_cache_train': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split train --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_window_cache --window_output_root window_outputs',
         's06_cache_valid': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_window_cache --window_output_root window_outputs',
-        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --split valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 1.5)}',
+        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --search_splits train,valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 1.5)} --hard_samples_only --threshold_offsets {_arg(args, "postprocess_threshold_offsets", "-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3")}',
         's06_eval': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_xpt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_deploy',
         's06_feat': '__extractor__',
@@ -144,6 +145,7 @@ def _step_list():
         ("s04",   "稳定性特征筛选",               True),
         ("s05",   "XGBoost模型训练",              True),
         ("s06_opt","状态机参数优化",              False),
+        ("s06_cache_train", "导出train NPZ缓存",  False),
         ("s06_cache_valid", "导出valid NPZ缓存",  False),
         ("s07_post", "FP敏感后处理搜参",          False),
         ("s06_eval","端到端评估(test)",           True),
@@ -1201,6 +1203,12 @@ def export_deploy_cookbook(artifact_dir):
                 "K_off": int(postprocess_cfg.get("K_off", 5)),
                 "cooldown_sec": float(postprocess_cfg.get("cooldown_sec", 5.0)),
                 "median_k": int(postprocess_cfg.get("median_k", 1)),
+                "threshold_offset": float(postprocess_cfg.get("threshold_offset", 0.0)),
+                "threshold_transform": postprocess_cfg.get(
+                    "threshold_transform",
+                    "disabled" if "threshold_offset" not in postprocess_cfg
+                    else "clip(prob_raw - (model_threshold + threshold_offset) + 0.5, 0, 1)",
+                ),
             },
         },
     }
@@ -1411,11 +1419,14 @@ def main():
 
     # ── s06 / s07 后处理搜参 ──
     p.add_argument('--export_window_cache', action=argparse.BooleanOptionalAction, default=False,
-                   help='导出 valid NPZ 缓存，供 s07 后处理搜参使用')
+                   help='导出 train/valid NPZ 缓存，供 s07 后处理搜参使用')
     p.add_argument('--optimize_postprocess', action=argparse.BooleanOptionalAction, default=False,
                    help='运行 s07 FP 敏感后处理搜参')
     p.add_argument('--postprocess_fp_cost', type=float, default=1.5,
                    help='s07 sample false-positive cost')
+    p.add_argument('--postprocess_threshold_offsets', type=str,
+                   default='-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3',
+                   help='s07 threshold offsets for hard-sample postprocess search')
     p.add_argument('--split', default='test', choices=['train', 'valid', 'test'],
                    help='s06 评估用的数据 split')
     p.add_argument('--model_search_feature_counts', type=str, default='',
@@ -1451,7 +1462,7 @@ def main():
 
     # ── 自动启用可选步骤 ──
     apply_pipeline_presets(args)
-    if stop_after in {'s06_cache_valid', 's07_post'}:
+    if stop_after in {'s06_cache_train', 's06_cache_valid', 's07_post'}:
         if 's06_cache_valid' not in skip_set:
             args.export_window_cache = True
     if stop_after == 's07_post' or args.optimize_postprocess:
@@ -1488,7 +1499,7 @@ def main():
         enabled = default_enabled
         if key == 's06_opt':
             enabled = getattr(args, 'optimize', False)  # legacy
-        if key == 's06_cache_valid':
+        if key in {'s06_cache_train', 's06_cache_valid'}:
             enabled = args.export_window_cache
         if key == 's07_post':
             enabled = args.optimize_postprocess

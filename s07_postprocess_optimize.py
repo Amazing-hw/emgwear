@@ -120,7 +120,83 @@ def load_cache_dir(cache_dir):
     return [load_window_cache_npz(os.path.join(cache_dir, p)) for p in paths]
 
 
-def iter_param_grid():
+def parse_csv_floats(text):
+    return [float(x.strip()) for x in str(text).split(",") if x.strip()]
+
+
+def parse_csv_splits(text):
+    return [x.strip().lower() for x in str(text).split(",") if x.strip()]
+
+
+def resolve_cache_dir(artifact_dir, cache_root, split):
+    cache_dir = os.path.join(artifact_dir, cache_root, split)
+    if not os.path.isdir(cache_dir) and cache_root == "window_outputs":
+        legacy = os.path.join(artifact_dir, "window_cache", split)
+        if os.path.isdir(legacy):
+            cache_dir = legacy
+    return cache_dir
+
+
+def load_cache_splits(artifact_dir, cache_root, splits):
+    caches = []
+    cache_dirs = {}
+    for split in splits:
+        cache_dir = resolve_cache_dir(artifact_dir, cache_root, split)
+        if not os.path.isdir(cache_dir):
+            raise FileNotFoundError(f"window cache directory not found: {cache_dir}")
+        split_caches = load_cache_dir(cache_dir)
+        for cache in split_caches:
+            cache["split"] = split
+        caches.extend(split_caches)
+        cache_dirs[split] = cache_dir
+    return caches, cache_dirs
+
+
+def threshold_candidates_for_cache(cache, offsets, min_threshold=0.02, max_threshold=0.98):
+    base = float(cache["model_threshold"])
+    values = []
+    for offset in offsets:
+        value = float(np.clip(base + float(offset), min_threshold, max_threshold))
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def sample_window_status(cache, skip_initial_windows=0):
+    sl = _window_slice(cache, skip_initial_windows)
+    probs = np.asarray(cache["prob_raw"], dtype=float)[sl]
+    enabled = np.asarray(cache["stage1_enabled"], dtype=np.int8)[sl].astype(bool)
+    if len(probs) == 0:
+        return "no_windows"
+    threshold = float(cache["model_threshold"])
+    preds = ((probs >= threshold) & enabled).astype(int)
+    target = int(cache["target"])
+    return "all_correct" if bool(np.all(preds == target)) else "hard"
+
+
+def filter_hard_samples(caches, skip_initial_windows=0):
+    selected = []
+    counts = {
+        "total_samples": int(len(caches)),
+        "hard_samples": 0,
+        "all_correct_samples": 0,
+        "no_window_samples": 0,
+    }
+    for cache in caches:
+        status = sample_window_status(cache, skip_initial_windows=skip_initial_windows)
+        cache["window_status"] = status
+        if status == "hard":
+            selected.append(cache)
+            counts["hard_samples"] += 1
+        elif status == "all_correct":
+            counts["all_correct_samples"] += 1
+        else:
+            counts["no_window_samples"] += 1
+    return selected, counts
+
+
+def iter_param_grid(threshold_offsets=None, include_threshold=True):
+    offsets = list(threshold_offsets if threshold_offsets is not None else [0.0])
     alphas = [0.25, 0.4, 0.6]
     t_ons = [0.55, 0.65, 0.75]
     t_offs = [0.20, 0.35, 0.45]
@@ -128,8 +204,9 @@ def iter_param_grid():
     k_offs = [1, 2, 3, 5]
     cooldowns = [0, 2, 5]
     median_ks = [1, 3, 5]
-    for alpha, t_on, t_off, k_on, k_off, cooldown, median_k in product(
-        alphas, t_ons, t_offs, k_ons, k_offs, cooldowns, median_ks
+    offset_values = offsets if include_threshold else [0.0]
+    for threshold_offset, alpha, t_on, t_off, k_on, k_off, cooldown, median_k in product(
+        offset_values, alphas, t_ons, t_offs, k_ons, k_offs, cooldowns, median_ks
     ):
         if t_off >= t_on:
             continue
@@ -141,6 +218,7 @@ def iter_param_grid():
             "K_off": k_off,
             "cooldown_sec": cooldown,
             "median_k": median_k,
+            "threshold_offset": float(threshold_offset),
         }
 
 
@@ -193,8 +271,9 @@ def score_metrics(metrics, fp_cost=1.5):
     )
 
 
-def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=None):
-    grid = list(iter_param_grid())
+def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=None,
+                       threshold_offsets=None):
+    grid = list(iter_param_grid(threshold_offsets=threshold_offsets))
     n_workers = max(1, int(n_workers or 1))
 
     if n_workers <= 1 or len(grid) <= 4:
@@ -252,6 +331,25 @@ def scan_window_thresholds(caches, thresholds, skip_initial_windows=0):
     return pd.DataFrame(rows)
 
 
+def summarize_guardrail(caches, params, skip_initial_windows=0):
+    metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
+    all_correct = [c for c in caches if c.get("window_status") == "all_correct"]
+    regressed = []
+    threshold_offset = float(params.get("threshold_offset", 0.0))
+    for cache in all_correct:
+        pred, _states, _window_preds, _scores = run_postprocess_on_cache(
+            cache, params, skip_initial_windows=skip_initial_windows
+        )
+        if int(pred) != int(cache["target"]):
+            regressed.append(cache["sample_name"])
+    return {
+        "all_samples_metrics": metrics,
+        "all_correct_samples": int(len(all_correct)),
+        "all_correct_regressions": int(len(regressed)),
+        "all_correct_regressed_samples": regressed,
+    }
+
+
 def _diagnostic_tag(target, pred, stage1_enabled, quality, ood_rate):
     if not stage1_enabled:
         return "stage1_blocked"
@@ -303,46 +401,56 @@ def main(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact_dir", type=str, default="artifacts")
     parser.add_argument("--split", type=str, default="valid", choices=["train", "valid", "test"])
+    parser.add_argument("--search_splits", type=str, default="train,valid")
     parser.add_argument("--cache_root", type=str, default="window_outputs")
     parser.add_argument("--fp_cost", type=float, default=4.0)
     parser.add_argument("--skip_initial_windows", type=int, default=0)
     parser.add_argument("--workers", type=int, default=1,
                         help="Number of parallel workers for postprocess grid search (default 1=serial)")
     parser.add_argument("--thresholds", type=str, default="0.3,0.4,0.5,0.6,0.7,0.8")
+    parser.add_argument("--threshold_offsets", type=str, default="-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3")
+    parser.add_argument("--hard_samples_only", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--max_all_correct_regressions", type=int, default=0)
 
     if args is None:
         args = parser.parse_args()
 
-    if str(args.split).lower() == "test":
+    search_splits = parse_csv_splits(getattr(args, "search_splits", "") or getattr(args, "split", "valid"))
+    if not search_splits:
+        search_splits = [str(args.split).lower()]
+    if any(split == "test" for split in search_splits) or str(args.split).lower() == "test":
         raise ValueError(
             "test split cannot be used for postprocess optimization; use valid "
             "and reserve test for final reporting."
         )
 
-    cache_dir = os.path.join(args.artifact_dir, args.cache_root, args.split)
-    if not os.path.isdir(cache_dir) and args.cache_root == "window_outputs":
-        legacy = os.path.join(args.artifact_dir, "window_cache", args.split)
-        if os.path.isdir(legacy):
-            cache_dir = legacy
-    if not os.path.isdir(cache_dir):
-        raise FileNotFoundError(f"window cache directory not found: {cache_dir}")
-
-    caches = load_cache_dir(cache_dir)
-    best, results = search_postprocess(
-        caches, fp_cost=args.fp_cost, skip_initial_windows=args.skip_initial_windows,
-        n_workers=args.workers,
+    caches, cache_dirs = load_cache_splits(args.artifact_dir, args.cache_root, search_splits)
+    hard_caches, hard_summary = filter_hard_samples(
+        caches, skip_initial_windows=args.skip_initial_windows
     )
+    search_caches = hard_caches if args.hard_samples_only else caches
+    if not search_caches:
+        print("[WARN] No hard samples available; falling back to all non-test cached samples.")
+        search_caches = caches
+
+    threshold_offsets = parse_csv_floats(args.threshold_offsets)
+    best, results = search_postprocess(
+        search_caches, fp_cost=args.fp_cost, skip_initial_windows=args.skip_initial_windows,
+        n_workers=args.workers, threshold_offsets=threshold_offsets,
+    )
+    guardrail = summarize_guardrail(caches, best, skip_initial_windows=args.skip_initial_windows)
 
     out_dir = os.path.join(args.artifact_dir, "postprocess_opt")
     os.makedirs(out_dir, exist_ok=True)
-    csv_path = os.path.join(out_dir, f"postprocess_search_{args.split}.csv")
-    json_path = os.path.join(out_dir, f"postprocess_optimized_{args.split}.json")
-    threshold_csv_path = os.path.join(out_dir, f"window_threshold_scan_{args.split}.csv")
-    error_csv_path = os.path.join(out_dir, f"window_error_report_{args.split}.csv")
-    error_summary_path = os.path.join(out_dir, f"window_error_summary_{args.split}.csv")
+    split_label = "_".join(search_splits)
+    csv_path = os.path.join(out_dir, f"postprocess_search_{split_label}.csv")
+    json_path = os.path.join(out_dir, f"postprocess_optimized_{split_label}.json")
+    threshold_csv_path = os.path.join(out_dir, f"window_threshold_scan_{split_label}.csv")
+    error_csv_path = os.path.join(out_dir, f"window_error_report_{split_label}.csv")
+    error_summary_path = os.path.join(out_dir, f"window_error_summary_{split_label}.csv")
     results.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-    thresholds = [float(x.strip()) for x in args.thresholds.split(",") if x.strip()]
+    thresholds = parse_csv_floats(args.thresholds)
     threshold_scan = scan_window_thresholds(
         caches, thresholds, skip_initial_windows=args.skip_initial_windows
     )
@@ -371,11 +479,18 @@ def main(args=None):
         "K_off": int(best["K_off"]),
         "cooldown_sec": float(best["cooldown_sec"]),
         "median_k": int(best["median_k"]),
+        "threshold_offset": float(best.get("threshold_offset", 0.0)),
+        "threshold_transform": "clip(prob_raw - (model_threshold + threshold_offset) + 0.5, 0, 1)",
     }
     payload = {
-        "split": args.split,
-        "cache_dir": cache_dir,
+        "split": split_label,
+        "search_splits": search_splits,
+        "cache_dirs": cache_dirs,
         "n_samples": len(caches),
+        "n_search_samples": len(search_caches),
+        "hard_samples_only": bool(args.hard_samples_only),
+        "hard_sample_summary": hard_summary,
+        "threshold_offsets": threshold_offsets,
         "fp_cost": float(args.fp_cost),
         "skip_initial_windows": int(args.skip_initial_windows),
         "best_params": best_params,
@@ -383,6 +498,7 @@ def main(args=None):
             k: float(best[k])
             for k in ("accuracy", "precision", "recall", "f1", "window_accuracy", "sample_fp_rate", "score")
         },
+        "guardrail": guardrail,
     }
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -396,10 +512,19 @@ def main(args=None):
         except (json.JSONDecodeError, OSError) as exc:
             print(f"[WARN] Failed to read {cfg_path}, using defaults: {exc}")
             cfg = {}
-    cfg["postprocess"] = best_params
-    cfg["postprocess_cache_optimization"] = payload
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    regressions = int(guardrail.get("all_correct_regressions", 0))
+    if regressions <= int(args.max_all_correct_regressions):
+        cfg["postprocess"] = best_params
+        cfg["postprocess_cache_optimization"] = payload
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+    else:
+        payload["write_skipped_reason"] = (
+            f"all_correct_regressions={regressions} exceeds "
+            f"max_all_correct_regressions={args.max_all_correct_regressions}"
+        )
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
 
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     print(f"saved search table: {csv_path}")

@@ -44,6 +44,10 @@ def test_s07_rejects_test_split_for_postprocess_optimization():
         "skip_initial_windows": 0,
         "workers": 1,
         "thresholds": "0.3,0.4",
+        "search_splits": "train,valid",
+        "hard_samples_only": True,
+        "threshold_offsets": "-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3",
+        "max_all_correct_regressions": 0,
     })()
 
     with pytest.raises(ValueError, match="test split.*postprocess"):
@@ -255,6 +259,74 @@ def test_cache_quality_value_affects_state_machine_score():
     )
 
     assert scores == [0.25]
+
+
+def test_threshold_override_recenters_probabilities_for_state_machine():
+    import s07_postprocess_optimize as s07
+
+    cache = {
+        "sample_name": "threshold_case",
+        "target": 1,
+        "prob_raw": np.array([0.65], dtype=float),
+        "stage1_enabled": np.array([1], dtype=np.int8),
+        "quality": np.array([1.0], dtype=float),
+        "model_threshold": 0.5,
+        "stride_sec": 1.0,
+    }
+    cfg = {
+        "alpha": 1.0,
+        "T_on": 0.5,
+        "T_off": 0.2,
+        "K_on": 1,
+        "K_off": 1,
+        "cooldown_sec": 0,
+        "median_k": 1,
+        "threshold_offset": 0.0,
+    }
+
+    low_threshold = s07.run_postprocess_on_cache(cache, cfg, model_threshold=0.5)
+    high_threshold = s07.run_postprocess_on_cache(cache, cfg, model_threshold=0.8)
+
+    assert low_threshold[0] == 1
+    assert high_threshold[0] == 0
+    assert low_threshold[3] == [0.65]
+    assert high_threshold[3] == [0.35]
+
+
+def test_hard_sample_filter_keeps_only_window_error_samples():
+    import s07_postprocess_optimize as s07
+
+    caches = [
+        {
+            "sample_name": "all_correct_pos",
+            "target": 1,
+            "prob_raw": np.array([0.8, 0.7], dtype=float),
+            "stage1_enabled": np.array([1, 1], dtype=np.int8),
+            "model_threshold": 0.5,
+        },
+        {
+            "sample_name": "hard_pos",
+            "target": 1,
+            "prob_raw": np.array([0.8, 0.2], dtype=float),
+            "stage1_enabled": np.array([1, 1], dtype=np.int8),
+            "model_threshold": 0.5,
+        },
+        {
+            "sample_name": "empty",
+            "target": 0,
+            "prob_raw": np.array([], dtype=float),
+            "stage1_enabled": np.array([], dtype=np.int8),
+            "model_threshold": 0.5,
+        },
+    ]
+
+    selected, summary = s07.filter_hard_samples(caches)
+
+    assert [c["sample_name"] for c in selected] == ["hard_pos"]
+    assert summary["total_samples"] == 3
+    assert summary["hard_samples"] == 1
+    assert summary["all_correct_samples"] == 1
+    assert summary["no_window_samples"] == 1
 
 
 def test_postprocess_export_includes_median_k():
