@@ -329,6 +329,88 @@ def test_hard_sample_filter_keeps_only_window_error_samples():
     assert summary["no_window_samples"] == 1
 
 
+def test_postprocess_search_prints_progress(capsys):
+    import s07_postprocess_optimize as s07
+
+    caches = [
+        {
+            "sample_name": "hard_pos",
+            "target": 1,
+            "prob_raw": np.array([0.8, 0.2], dtype=float),
+            "stage1_enabled": np.array([1, 1], dtype=np.int8),
+            "quality": np.array([1.0, 1.0], dtype=float),
+            "model_threshold": 0.5,
+            "stride_sec": 1.0,
+        }
+    ]
+
+    best, results = s07.search_postprocess(
+        caches,
+        fp_cost=1.5,
+        threshold_offsets=[0.0],
+        max_candidates=2,
+        progress_interval=1,
+    )
+
+    output = capsys.readouterr().out
+    assert "[s07] 搜参开始" in output
+    assert "[s07] progress" in output
+    assert "[s07] 搜参完成" in output
+    assert best is not None
+    assert len(results) == 2
+
+
+def test_postprocess_metrics_match_sklearn_definitions():
+    import s07_postprocess_optimize as s07
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+
+    caches = [
+        {
+            "sample_name": "pos_ok",
+            "target": 1,
+            "prob_raw": np.array([0.9, 0.9], dtype=float),
+            "stage1_enabled": np.array([1, 1], dtype=np.int8),
+            "quality": np.array([1.0, 1.0], dtype=float),
+            "model_threshold": 0.5,
+            "stride_sec": 1.0,
+        },
+        {
+            "sample_name": "neg_fp",
+            "target": 0,
+            "prob_raw": np.array([0.9, 0.9], dtype=float),
+            "stage1_enabled": np.array([1, 1], dtype=np.int8),
+            "quality": np.array([1.0, 1.0], dtype=float),
+            "model_threshold": 0.5,
+            "stride_sec": 1.0,
+        },
+    ]
+    cfg = {
+        "alpha": 1.0,
+        "T_on": 0.5,
+        "T_off": 0.2,
+        "K_on": 1,
+        "K_off": 1,
+        "cooldown_sec": 0,
+        "median_k": 1,
+        "threshold_offset": 0.0,
+    }
+
+    metrics = s07.evaluate_params(caches, cfg)
+    y_true, y_pred, win_true, win_pred = [], [], [], []
+    for cache in caches:
+        pred, states, _window_preds, _scores = s07.run_postprocess_on_cache(cache, cfg)
+        y_true.append(cache["target"])
+        y_pred.append(pred)
+        win_true.extend([cache["target"]] * len(states))
+        win_pred.extend(states)
+
+    assert metrics["accuracy"] == accuracy_score(y_true, y_pred)
+    assert metrics["precision"] == precision_score(y_true, y_pred, zero_division=0)
+    assert metrics["recall"] == recall_score(y_true, y_pred, zero_division=0)
+    assert metrics["f1"] == f1_score(y_true, y_pred, zero_division=0)
+    assert metrics["window_accuracy"] == accuracy_score(win_true, win_pred)
+
+
 def test_postprocess_export_includes_median_k():
     cfg = {"alpha": 0.2, "median_k": 5, "T_on": 0.6, "T_off": 0.3, "K_on": 2, "K_off": 3, "cooldown_sec": 1}
 

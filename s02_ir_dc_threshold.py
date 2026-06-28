@@ -28,7 +28,7 @@ STAGE1_FS = 100
 STAGE1_WINDOW_SEC = 3.0
 STAGE1_STRIDE_SEC = 1.0
 FIXED_STAGE1_DC_THRESHOLD = 0.2e6
-FIXED_STAGE1_AC_DC_THRESHOLD = 0.35
+FIXED_STAGE1_AC_DC_THRESHOLD = 1.0
 FIXED_STAGE1_SEARCH_SOURCE = "fixed_engineering_threshold"
 
 # Linux/macOS 默认 fork 模式多进程读 H5 可能死锁，强制 spawn
@@ -580,7 +580,7 @@ def build_fixed_stage1_threshold_artifact(
         ),
 
         "notes": [
-            "deploy_stage1_threshold is fixed at dc=0.2e6 and ac_dc=0.35.",
+            "deploy_stage1_threshold is fixed at dc=0.2e6 and ac_dc=1.0.",
             "Stage1 train/valid/test all use the same deployment gate.",
             "train_stage1_threshold remains a relaxed gate only for Stage2 train/valid feature extraction.",
             "test does not participate in threshold search, feature selection, or model threshold selection.",

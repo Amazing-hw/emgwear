@@ -62,6 +62,7 @@ def test_pipeline_commands_include_npz_cache_postprocess_path():
     assert "--cache_root window_outputs" in commands["s07_post"]
     assert "--search_splits train,valid" in commands["s07_post"]
     assert "--hard_samples_only" in commands["s07_post"]
+    assert "--workers 2" in commands["s07_post"]
     assert "--threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in commands["s07_post"]
 
 

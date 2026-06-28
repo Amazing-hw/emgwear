@@ -211,7 +211,7 @@ DC > dc_threshold AND AC_DC_RATIO < ac_dc_threshold
 
 ```text
 dc_threshold = 0.2e6
-ac_dc_threshold = 0.35
+ac_dc_threshold = 1.0
 ```
 
 ### Stage2: XGBoost 窗口模型
@@ -251,6 +251,8 @@ hard_samples_only = true
 threshold_offsets = -0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 max_all_correct_regressions = 0
 ```
+
+`s08` 会把 `--n_workers` 传给 `s07` 的 `--workers`，后处理搜参会打印候选数、样本数、worker 数、进度、耗时、ETA 和当前最优分数。
 
 hard sample 定义：
 
@@ -329,8 +331,10 @@ python s06_deploy_eval.py --artifact_dir artifacts --split valid --export_window
 后处理搜参：
 
 ```bash
-python s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 1.5 --hard_samples_only --threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
+python s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 1.5 --workers 4 --hard_samples_only --threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 ```
+
+临时调试搜参速度时可以加 `--max_candidates 200 --progress_interval 20`，正式结果不要限制 `--max_candidates`。
 
 最终 test 评估和部署导出：
 

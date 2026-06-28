@@ -8,6 +8,7 @@ import json
 import os
 import pickle
 import sys
+import time
 from itertools import product
 from concurrent.futures import ProcessPoolExecutor
 
@@ -56,6 +57,35 @@ def _score_grid_point(params):
     metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
     score = score_metrics(metrics, fp_cost=fp_cost)
     return {**params, **metrics, "score": float(score)}
+
+
+def _format_elapsed(seconds):
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{sec:02d}"
+    return f"{minutes:02d}:{sec:02d}"
+
+
+def _progress_due(done, total, interval, last_report_done):
+    if done >= total:
+        return True
+    interval = max(1, int(interval or 1))
+    return done == 1 or (done - last_report_done) >= interval
+
+
+def _print_search_progress(done, total, start_time, best_score, workers):
+    elapsed = time.time() - start_time
+    rate = done / elapsed if elapsed > 0 else 0.0
+    remaining = (total - done) / rate if rate > 0 else 0.0
+    print(
+        "[s07] progress "
+        f"{done}/{total} ({done / total:.1%}) "
+        f"elapsed={_format_elapsed(elapsed)} eta={_format_elapsed(remaining)} "
+        f"workers={workers} best_score={best_score:.6f}",
+        flush=True,
+    )
 
 
 REQUIRED_KEYS = (
@@ -249,20 +279,34 @@ def iter_param_grid(threshold_offsets=None, include_threshold=True):
 
 
 def evaluate_params(caches, params, skip_initial_windows=0):
-    y_true, y_pred = [], []
-    win_true, win_pred = [], []
+    n_samples = 0
+    sample_correct = 0
+    tp = fp = fn = 0
+    neg = sample_fp = 0
+    n_windows = 0
+    window_correct = 0
     for cache in caches:
         pred, states, _window_preds, _scores = run_postprocess_on_cache(
             cache, params, skip_initial_windows=skip_initial_windows
         )
         target = int(cache["target"])
-        y_true.append(target)
-        y_pred.append(int(pred))
+        pred = int(pred)
+        n_samples += 1
+        sample_correct += int(pred == target)
+        if target == 1 and pred == 1:
+            tp += 1
+        elif target == 0 and pred == 1:
+            fp += 1
+        elif target == 1 and pred == 0:
+            fn += 1
+        if target == 0:
+            neg += 1
+            sample_fp += int(pred == 1)
         for state in states:
-            win_true.append(target)
-            win_pred.append(int(state))
+            n_windows += 1
+            window_correct += int(int(state) == target)
 
-    if not y_true:
+    if n_samples == 0:
         return {
             "accuracy": 0.0,
             "precision": 0.0,
@@ -272,17 +316,17 @@ def evaluate_params(caches, params, skip_initial_windows=0):
             "sample_fp_rate": 0.0,
         }
 
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-    neg = y_true == 0
-    fp_rate = float(np.mean(y_pred[neg] == 1)) if np.any(neg) else 0.0
+    precision = float(tp / (tp + fp)) if (tp + fp) else 0.0
+    recall = float(tp / (tp + fn)) if (tp + fn) else 0.0
+    f1 = float(2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+    fp_rate = float(sample_fp / neg) if neg else 0.0
     skipped = sum(min(max(0, int(skip_initial_windows)), len(c["prob_raw"])) for c in caches)
     return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "window_accuracy": float(accuracy_score(win_true, win_pred)) if win_true else 0.0,
+        "accuracy": float(sample_correct / n_samples),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "window_accuracy": float(window_correct / n_windows) if n_windows else 0.0,
         "sample_fp_rate": fp_rate,
         "skipped_initial_windows": int(skipped),
     }
@@ -298,20 +342,39 @@ def score_metrics(metrics, fp_cost=1.5):
 
 
 def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=None,
-                       threshold_offsets=None):
+                       threshold_offsets=None, max_candidates=None, progress_interval=200):
     grid = list(iter_param_grid(threshold_offsets=threshold_offsets))
+    if max_candidates is not None:
+        grid = grid[:max(0, int(max_candidates))]
     n_workers = max(1, int(n_workers or 1))
+    total = len(grid)
+    if total == 0:
+        empty = pd.DataFrame()
+        return None, empty
+
+    print(
+        "[s07] 搜参开始: "
+        f"candidates={total}, samples={len(caches)}, workers={n_workers}, "
+        f"progress_interval={max(1, int(progress_interval or 1))}",
+        flush=True,
+    )
+    start_time = time.time()
+    last_report_done = 0
 
     if n_workers <= 1 or len(grid) <= 4:
         rows = []
         best = None
-        for params in grid:
+        for done, params in enumerate(grid, start=1):
             metrics = evaluate_params(caches, params, skip_initial_windows=skip_initial_windows)
             score = score_metrics(metrics, fp_cost=fp_cost)
             row = {**params, **metrics, "score": float(score)}
             rows.append(row)
             if best is None or score > best["score"]:
                 best = row
+            if _progress_due(done, total, progress_interval, last_report_done):
+                _print_search_progress(done, total, start_time, float(best["score"]), n_workers)
+                last_report_done = done
+        print(f"[s07] 搜参完成: best_score={float(best['score']):.6f}", flush=True)
         return best, pd.DataFrame(rows).sort_values("score", ascending=False)
 
     payload = (caches, skip_initial_windows, float(fp_cost))
@@ -324,10 +387,16 @@ def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=No
         initializer=_init_score_worker,
         initargs=(payload_bytes,),
     ) as executor:
-        for row in executor.map(_score_grid_point, grid, chunksize=chunksize):
+        best = None
+        for done, row in enumerate(executor.map(_score_grid_point, grid, chunksize=chunksize), start=1):
             rows.append(row)
+            if best is None or row["score"] > best["score"]:
+                best = row
+            if _progress_due(done, total, progress_interval, last_report_done):
+                _print_search_progress(done, total, start_time, float(best["score"]), n_workers)
+                last_report_done = done
 
-    best = max(rows, key=lambda r: r["score"])
+    print(f"[s07] 搜参完成: best_score={float(best['score']):.6f}", flush=True)
     return best, pd.DataFrame(rows).sort_values("score", ascending=False)
 
 
@@ -437,6 +506,10 @@ def main(args=None):
     parser.add_argument("--threshold_offsets", type=str, default="-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3")
     parser.add_argument("--hard_samples_only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max_all_correct_regressions", type=int, default=0)
+    parser.add_argument("--progress_interval", type=int, default=200,
+                        help="Print search progress every N completed candidates.")
+    parser.add_argument("--max_candidates", type=int, default=None,
+                        help="Optional debug limit for postprocess search candidates; default searches full grid.")
 
     if args is None:
         args = parser.parse_args(_normalize_negative_csv_options(sys.argv[1:], {"--threshold_offsets"}))
@@ -463,7 +536,10 @@ def main(args=None):
     best, results = search_postprocess(
         search_caches, fp_cost=args.fp_cost, skip_initial_windows=args.skip_initial_windows,
         n_workers=args.workers, threshold_offsets=threshold_offsets,
+        max_candidates=args.max_candidates, progress_interval=args.progress_interval,
     )
+    if best is None:
+        raise RuntimeError("postprocess search produced no candidates")
     guardrail = summarize_guardrail(caches, best, skip_initial_windows=args.skip_initial_windows)
 
     out_dir = os.path.join(args.artifact_dir, "postprocess_opt")
