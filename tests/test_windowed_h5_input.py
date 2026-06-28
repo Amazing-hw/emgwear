@@ -57,6 +57,102 @@ def test_s01_scans_nested_window_groups_as_one_sample_and_drops_first_three():
         shutil.rmtree(root.parent, ignore_errors=True)
 
 
+def test_s01_hash_split_keeps_existing_samples_stable_when_new_data_is_appended():
+    import s01_data_split as s01
+
+    old_samples = [
+        {"sample_name": f"old_{i:03d}", "h5_file": "old_file.h5", "target": i % 2}
+        for i in range(60)
+    ]
+    new_samples = [
+        {"sample_name": f"new_{i:03d}", "h5_file": "new_file.h5", "target": i % 2}
+        for i in range(30)
+    ]
+
+    before = s01.split_samples(old_samples, valid_size=0.15, test_size=0.15, random_state=42)
+    after = s01.split_samples(old_samples + new_samples, valid_size=0.15, test_size=0.15, random_state=42)
+
+    def assignment(split):
+        return {
+            sample["sample_name"]: part
+            for part, items in split.items()
+            for sample in items
+            if sample["sample_name"].startswith("old_")
+        }
+
+    assert assignment(after) == assignment(before)
+
+
+def test_s01_hash_split_keeps_existing_samples_stable_when_same_h5_is_appended():
+    import s01_data_split as s01
+
+    old_samples = [
+        {"sample_name": f"old_{i:03d}", "h5_file": "same_file.h5", "target": i % 2}
+        for i in range(30)
+    ]
+    appended_samples = [
+        {"sample_name": f"new_{i:03d}", "h5_file": "same_file.h5", "target": i % 2}
+        for i in range(90)
+    ]
+
+    before = s01.split_samples(old_samples, valid_size=0.2, test_size=0.2, random_state=42)
+    after = s01.split_samples(old_samples + appended_samples, valid_size=0.2, test_size=0.2, random_state=42)
+
+    def assignment(split):
+        return {
+            sample["sample_name"]: part
+            for part, items in split.items()
+            for sample in items
+            if sample["sample_name"].startswith("old_")
+        }
+
+    assert assignment(after) == assignment(before)
+
+
+def test_s01_hash_split_covers_each_large_h5_file_across_splits():
+    import s01_data_split as s01
+
+    samples = [
+        {"sample_name": f"sample_{h5_idx}_{i:03d}", "h5_file": f"scene_{h5_idx}.h5", "target": i % 2}
+        for h5_idx in range(3)
+        for i in range(80)
+    ]
+
+    split = s01.split_samples(samples, valid_size=0.15, test_size=0.15, random_state=42)
+
+    by_h5 = {f"scene_{idx}.h5": set() for idx in range(3)}
+    for part, items in split.items():
+        for sample in items:
+            by_h5[sample["h5_file"]].add(part)
+
+    assert by_h5 == {
+        "scene_0.h5": {"train", "valid", "test"},
+        "scene_1.h5": {"train", "valid", "test"},
+        "scene_2.h5": {"train", "valid", "test"},
+    }
+
+
+def test_s01_split_uses_stable_hash_bucket_boundaries():
+    import s01_data_split as s01
+
+    samples = [
+        {"sample_name": f"sample_{i:03d}", "h5_file": "scene_a.h5", "target": i % 2}
+        for i in range(80)
+    ]
+
+    split = s01.split_samples(samples, valid_size=0.2, test_size=0.2, random_state=42)
+
+    for part, items in split.items():
+        for sample in items:
+            score = s01._hash_fraction(s01._stable_sample_key(sample), seed=42)
+            if part == "test":
+                assert score < 0.2
+            elif part == "valid":
+                assert 0.2 <= score < 0.4
+            else:
+                assert score >= 0.4
+
+
 def test_nested_window_loaders_preserve_name_order_and_window_indices():
     import s01_data_split as s01
     import s02_ir_dc_threshold as s02

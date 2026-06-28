@@ -1914,7 +1914,8 @@ def main(args=None):
     sample_summary, details = compute_sample_metrics(
         results, args.method, postprocess_cfg, bundle["threshold"],
         stride_sec=args.stride_sec)
-    window_model_summary = compute_window_model_metrics(results)
+    window_model_summary = compute_window_model_metrics(
+        results, warmup_frames=args.warmup_frames)
     window_stream_summary = compute_window_stream_metrics(
         results, postprocess_cfg, warmup_frames=args.warmup_frames,
         stride_sec=args.stride_sec, model_threshold=float(bundle["threshold"]))

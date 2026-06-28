@@ -19,7 +19,7 @@ python new_new/s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifact
 这条命令会完成：
 
 ```text
-s01 数据扫描与 train/valid/test 固定切分
+s01 数据扫描与每个 H5 内 train/valid/test 稳定 hash 切分
 s02 Stage1 PPG DC/ACDC 工程阈值配置
 s03 PPG/EMG/ACC 特征池提取
 s04 特征清洗、相关性/VIF/稳定性筛选
@@ -178,7 +178,7 @@ s01 会按窗口编号排序后去掉每条样本开头前三个窗口。
 
 | 脚本 | 作用 |
 | --- | --- |
-| `s01_data_split.py` | 扫描 H5，按样本级固定切分 `train/valid/test` |
+| `s01_data_split.py` | 扫描 H5，在每个 H5 内按样本级稳定 hash 落桶切分 `train/valid/test` 后合并，新增数据不会重洗旧样本归属；切分比例是期望值，小 H5 不强行精确比例 |
 | `s02_ir_dc_threshold.py` | 生成 Stage1 PPG DC/ACDC 工程阈值配置 |
 | `s03_extract_feature_pool.py` | 提取 PPG/EMG/ACC 窗口级特征池 |
 | `s04_feature_selection.py` | 特征清洗、相关性/VIF、稳定性筛选 |
@@ -410,10 +410,10 @@ details
   每条样本的预测细节
 
 window_model_summary
-  Stage2 窗口级模型指标
+  Stage2 窗口级模型指标；与 window_stream_summary 使用相同 warmup 跳窗口径
 
 window_stream_summary
-  Stage2+3 流式窗口状态指标
+  Stage2+3 流式窗口状态指标；评估的是状态机逐窗状态，不是原始窗口分类
 
 ood_summary
   特征 OOD 比例统计

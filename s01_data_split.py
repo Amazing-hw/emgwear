@@ -19,11 +19,11 @@ import glob
 import json
 import argparse
 import re
+import hashlib
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import h5py
-from sklearn.model_selection import train_test_split
 
 # Linux/macOS 默认 fork 模式多进程读 H5 可能死锁，强制 spawn
 if sys.platform != "win32":
@@ -180,33 +180,48 @@ def scan_h5_samples(dataset_dir, n_workers=None):
     return samples
 
 
+def _stable_sample_key(sample):
+    h5_name = os.path.basename(str(sample.get("h5_file", "")))
+    return f"{h5_name}::{sample.get('sample_name', '')}"
+
+
+def _stable_h5_key(sample):
+    return os.path.basename(str(sample.get("h5_file", "")))
+
+
+def _hash_fraction(text, seed=42):
+    payload = f"{seed}::{text}".encode("utf-8", errors="replace")
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    value = int.from_bytes(digest, "big", signed=False)
+    return value / float(1 << 64)
+
+
 def split_samples(samples, valid_size=0.15, test_size=0.15, random_state=42):
-    """sample 级分层切分。单类别时自动退化为随机切分。"""
-    y = np.array([s["target"] for s in samples])
-    indices = np.arange(len(samples))
-    unique_labels = np.unique(y)
+    """Stable per-H5 hash-bucket split; adding samples does not reshuffle existing samples."""
+    valid_size = float(valid_size)
+    test_size = float(test_size)
+    if valid_size < 0 or test_size < 0 or valid_size + test_size >= 1.0:
+        raise ValueError("valid_size and test_size must be non-negative and sum to less than 1")
 
-    def _split(arr, test_ratio, labels):
-        """stratified split; falls back to random when fewer than 2 classes."""
-        if len(np.unique(labels)) >= 2 and len(labels) >= 4:
-            return train_test_split(
-                arr, test_size=test_ratio,
-                random_state=random_state, stratify=labels,
-            )
-        return train_test_split(
-            arr, test_size=test_ratio,
-            random_state=random_state,
+    split = {"train": [], "valid": [], "test": []}
+    by_h5 = {}
+    for sample in samples:
+        by_h5.setdefault(_stable_h5_key(sample), []).append(sample)
+
+    for h5_key in sorted(by_h5):
+        group = sorted(
+            by_h5[h5_key],
+            key=_stable_sample_key,
         )
-
-    train_valid_idx, test_idx = _split(indices, test_size, y)
-    y_train_valid = y[train_valid_idx]
-    valid_ratio_in_train_valid = valid_size / (1.0 - test_size)
-    train_idx, valid_idx = _split(train_valid_idx, valid_ratio_in_train_valid, y_train_valid)
-    return {
-        "train": [samples[i] for i in train_idx],
-        "valid": [samples[i] for i in valid_idx],
-        "test": [samples[i] for i in test_idx],
-    }
+        for sample in group:
+            score = _hash_fraction(_stable_sample_key(sample), seed=random_state)
+            if score < test_size:
+                split["test"].append(sample)
+            elif score < test_size + valid_size:
+                split["valid"].append(sample)
+            else:
+                split["train"].append(sample)
+    return split
 
 
 def summarize_split(split):
