@@ -391,6 +391,20 @@ def test_postprocess_search_prints_progress(capsys):
     assert len(results) == 2
 
 
+def test_postprocess_search_budget_selects_representative_candidates():
+    import s07_postprocess_optimize as s07
+
+    full_grid = list(s07.iter_param_grid(threshold_offsets=[-0.3, 0.0, 0.3]))
+    selected = s07.select_postprocess_search_grid(full_grid, search_budget=12)
+
+    assert len(selected) == 12
+    assert selected != full_grid[:12]
+    assert selected[0] == full_grid[0]
+    assert full_grid[len(full_grid) // 2] in selected
+    assert full_grid[-1] in selected
+    assert selected == s07.select_postprocess_search_grid(full_grid, search_budget=12)
+
+
 def test_postprocess_metrics_match_sklearn_definitions():
     import s07_postprocess_optimize as s07
     from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score

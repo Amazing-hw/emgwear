@@ -94,6 +94,16 @@ def test_model_search_score_uses_valid_accuracy_as_primary_objective():
     assert oversized["score"] == float("-inf")
 
 
+def test_model_search_score_default_has_no_node_cap():
+    oversized = s05.score_model_search_candidate(
+        {"accuracy": 0.99, "confusion_matrix": {"TN": 95, "FP": 5, "FN": 1, "TP": 99}},
+        total_nodes=999,
+    )
+
+    assert oversized["eligible"] is True
+    assert oversized["size_ratio"] == 0.0
+
+
 def test_model_search_prefers_smaller_model_within_accuracy_tolerance():
     large = {
         "eligible": True,
@@ -204,9 +214,17 @@ def test_pipeline_commands_pass_hard_negative_params_to_s05():
     assert "--hard_negative_min_accuracy_delta 0.01" in cmd
 
 
+def test_s05_cli_defaults_search_40_to_80_trees_without_node_cap():
+    parser = s05.build_arg_parser()
+    args = parser.parse_args([])
+
+    assert args.model_search_n_estimators == "40,45,50,55,60,65,70,75,80"
+    assert args.max_model_nodes == 0
+
+
 def test_default_model_search_axes_include_fine_n_estimators():
     args = SimpleNamespace(
-        model_search_n_estimators="20,25,30,35,40,45,50,55,60,70,80",
+        model_search_n_estimators="40,45,50,55,60,65,70,75,80",
         model_search_max_depth="2,3,4",
         model_search_learning_rate="0.025,0.03,0.04,0.05,0.06,0.08,0.10",
         model_search_min_child_weight="10,15,20,25,30,40,50",
@@ -218,10 +236,7 @@ def test_default_model_search_axes_include_fine_n_estimators():
 
     axes = s05.build_model_search_axes(args)
 
-    assert 25 in axes["n_estimators"]
-    assert 35 in axes["n_estimators"]
-    assert 45 in axes["n_estimators"]
-    assert 55 in axes["n_estimators"]
+    assert axes["n_estimators"] == [40, 45, 50, 55, 60, 65, 70, 75, 80]
 
 
 def test_sampled_candidates_force_default_params_even_when_user_grid_excludes_them():

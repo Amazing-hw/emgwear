@@ -486,7 +486,7 @@ def _window_fp_rate_from_metrics(metrics):
     return float(fp) / float(n_neg)
 
 
-def score_model_search_candidate(metrics, total_nodes, max_model_nodes=500,
+def score_model_search_candidate(metrics, total_nodes, max_model_nodes=0,
                                  fp_cost=2.0, size_cost=0.1):
     total_nodes = int(total_nodes)
     max_model_nodes = int(max_model_nodes)
@@ -847,7 +847,8 @@ def evaluate_group_cv_candidate(candidate, args, X_train, y_train, groups=None,
 
     final_model = train_xgb_with_params(params, X_train, y_train, n_jobs=n_jobs)
     final_total_nodes = count_xgb_nodes(final_model)
-    eligible = int(final_total_nodes) <= int(getattr(args, "max_model_nodes", 500))
+    max_model_nodes = int(getattr(args, "max_model_nodes", 0))
+    eligible = max_model_nodes <= 0 or int(final_total_nodes) <= max_model_nodes
 
     return {
         "rank_input_order": int(candidate.get("rank_input_order", 0)),
@@ -1411,7 +1412,7 @@ def train_final_model_for_features(args, fs, df_train_raw, df_valid_raw,
     avg_nodes = total_nodes / max(model.n_estimators, 1)
     logger.info("trained %d trees, total_nodes=%d, avg_nodes/tree=%.1f",
                 model.n_estimators, total_nodes, avg_nodes)
-    if total_nodes > int(args.max_model_nodes):
+    if int(args.max_model_nodes) > 0 and total_nodes > int(args.max_model_nodes):
         logger.warning("总节点数 %d 超过 %d 上限", total_nodes, int(args.max_model_nodes))
 
     valid_default = chosen_candidate["valid_default"]
@@ -1554,7 +1555,7 @@ def build_fingerprint(artifact_dir, feature_pool_path, splits_path):
     return info
 
 
-def main(args=None):
+def build_arg_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact_dir", type=str, default="artifacts")
     parser.add_argument(
@@ -1570,7 +1571,10 @@ def main(args=None):
                         help="Compatibility passthrough from s08; selected_features.json remains authoritative.")
     parser.add_argument("--model_search", action="store_true",
                         help="Search XGBoost hyperparameters using train-only repeated group CV.")
-    parser.add_argument("--max_model_nodes", type=int, default=500)
+    parser.add_argument(
+        "--max_model_nodes", type=int, default=0,
+        help="Maximum total XGBoost nodes allowed during search; <=0 disables the cap."
+    )
     parser.add_argument("--model_search_fp_cost", type=float, default=2.0)
     parser.add_argument("--model_search_size_cost", type=float, default=0.1)
     parser.add_argument("--model_search_strategy", type=str, default="staged_group_cv",
@@ -1584,7 +1588,7 @@ def main(args=None):
                         help="Number of parallel workers for model search candidate evaluation (default 4)")
     parser.add_argument("--model_search_accuracy_tolerance", type=float, default=0.0)
     parser.add_argument("--model_search_stage1_top_k", type=int, default=4)
-    parser.add_argument("--model_search_n_estimators", type=str, default="20,25,30,35,40,45,50,55,60")
+    parser.add_argument("--model_search_n_estimators", type=str, default="40,45,50,55,60,65,70,75,80")
     parser.add_argument("--model_search_max_depth", type=str, default="2,3,4")
     parser.add_argument("--model_search_learning_rate", type=str, default="0.025,0.03,0.04,0.05,0.06,0.08,0.10")
     parser.add_argument("--model_search_min_child_weight", type=str, default="10,15,20,25,30,40,50")
@@ -1618,6 +1622,12 @@ def main(args=None):
         "--legacy_scale_pos_weight", action="store_true", default=False,
         help=("回退到旧行为 scale_pos_weight = neg/pos。仅用于对照实验。")
     )
+
+    return parser
+
+
+def main(args=None):
+    parser = build_arg_parser()
 
     if args is None:
         args = parser.parse_args()

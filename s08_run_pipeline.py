@@ -30,6 +30,7 @@ import sys
 import time
 import subprocess
 import joblib
+import re
 from datetime import timedelta
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -66,16 +67,22 @@ SEARCH_BUDGET_PRESETS = {
         "model_search_max_candidates": 150,
         "model_search_stage2_top_k": 20,
         "model_search_cv_repeats": 1,
+        "model_search_full_top_k": 1,
+        "postprocess_search_budget": 120,
     },
     "balanced": {
         "model_search_max_candidates": 300,
         "model_search_stage2_top_k": 40,
         "model_search_cv_repeats": 3,
+        "model_search_full_top_k": 1,
+        "postprocess_search_budget": 240,
     },
     "accuracy": {
         "model_search_max_candidates": 600,
         "model_search_stage2_top_k": 80,
         "model_search_cv_repeats": 5,
+        "model_search_full_top_k": 2,
+        "postprocess_search_budget": 720,
     },
 }
 
@@ -104,12 +111,110 @@ def _run(name, cmd):
         return False
 
 
+def _parse_int_csv(raw):
+    return [int(x.strip()) for x in str(raw or "").split(",") if x.strip()]
+
+
+def _replace_max_features(cmd, value):
+    return re.sub(r" --max_features \d+", f" --max_features {int(value)}", cmd)
+
+
+def _replace_feature_counts(cmd, value):
+    replacement = f'--model_search_feature_counts "{int(value)}"'
+    if "--model_search_feature_counts" in cmd:
+        return re.sub(r'--model_search_feature_counts "[^"]*"', replacement, cmd)
+    return cmd + " " + replacement
+
+
+def _remove_feature_counts(cmd):
+    return re.sub(r' ?--model_search_feature_counts "[^"]*"', "", cmd)
+
+
+def _disable_model_search(cmd):
+    return cmd.replace(" --model_search", " --no-model_search", 1)
+
+
+def _read_s05_quick_k_score(artifact_dir):
+    config_path = os.path.join(artifact_dir, "final_model_config.json")
+    if not os.path.exists(config_path):
+        return None
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    for path in [
+        ("feature_count_search", "selected_candidate", "mean_cv_accuracy"),
+        ("model_search", "feature_count_search", "selected_candidate", "mean_cv_accuracy"),
+        ("valid_best_threshold_metrics", "accuracy"),
+        ("valid_default_threshold_metrics", "accuracy"),
+    ]:
+        cur = config
+        try:
+            for key in path:
+                cur = cur[key]
+            if cur is not None:
+                return float(cur)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _run_s05_feature_count_search(display_name, cmd, args):
+    counts = sorted(set(_parse_int_csv(getattr(args, "model_search_feature_counts", ""))))
+    if len(counts) <= 1:
+        return _run(display_name, cmd)
+
+    top_k = max(1, min(int(getattr(args, "model_search_full_top_k", 1) or 1), len(counts)))
+    quick_scores = []
+    ok = True
+    quick_template = _remove_feature_counts(_disable_model_search(cmd))
+    print(f"\n[feature-count search] quick evaluation k={counts}")
+    for feature_count in counts:
+        quick_cmd = _replace_max_features(quick_template, feature_count)
+        ok = _run(f"{display_name} quick feature-count search k={feature_count}", quick_cmd)
+        if not ok:
+            return False
+        score = _read_s05_quick_k_score(args.artifact_dir)
+        if score is not None:
+            quick_scores.append((int(feature_count), float(score)))
+
+    if quick_scores:
+        selected = sorted(quick_scores, key=lambda item: (item[1], item[0]), reverse=True)[:top_k]
+    else:
+        selected = [(feature_count, None) for feature_count in counts[-top_k:]]
+
+    print(f"\n[feature-count search] full model search top_k={top_k}: {[k for k, _score in selected]}")
+    for idx, (feature_count, _score) in enumerate(selected, start=1):
+        full_cmd = _replace_feature_counts(_replace_max_features(cmd, feature_count), feature_count)
+        ok = _run(f"{display_name} full model search #{idx}/{top_k} k={feature_count}", full_cmd)
+        if not ok:
+            return False
+    return True
+
+
+def _dry_run_s05_feature_count_search(display_name, cmd, args):
+    counts = sorted(set(_parse_int_csv(getattr(args, "model_search_feature_counts", ""))))
+    if len(counts) <= 1:
+        print(f'[DRY] {display_name}: {cmd}')
+        return
+    top_k = max(1, min(int(getattr(args, "model_search_full_top_k", 1) or 1), len(counts)))
+    quick_template = _remove_feature_counts(_disable_model_search(cmd))
+    print(f"[DRY] {display_name}: feature-count two-stage search counts={counts}, full_top_k={top_k}")
+    for feature_count in counts:
+        quick_cmd = _replace_max_features(quick_template, feature_count)
+        print(f"[DRY] {display_name} quick feature-count search k={feature_count}: {quick_cmd}")
+    for idx, feature_count in enumerate(counts[-top_k:], start=1):
+        full_cmd = _replace_feature_counts(_replace_max_features(cmd, feature_count), feature_count)
+        print(f"[DRY] {display_name} full model search #{idx}/{top_k} k={feature_count}: {full_cmd}")
+
+
 def build_pipeline_commands(args):
     s05_extra = f' --max_features {args.max_features}'
     if getattr(args, "model_search", True):
         s05_extra += (
             f' --model_search'
-            f' --max_model_nodes {_arg(args, "max_model_nodes", 500)}'
+            f' --max_model_nodes {_arg(args, "max_model_nodes", 0)}'
             f' --model_search_fp_cost {_arg(args, "model_search_fp_cost", 2.0)}'
             f' --model_search_size_cost {_arg(args, "model_search_size_cost", 0.1)}'
             f' --model_search_strategy {_arg(args, "model_search_strategy", "staged_group_cv")}'
@@ -120,7 +225,7 @@ def build_pipeline_commands(args):
             f' --model_search_random_state {_arg(args, "model_search_random_state", 42)}'
             f' --model_search_accuracy_tolerance {_arg(args, "model_search_accuracy_tolerance", 0.0)}'
             f' --model_search_stage1_top_k {_arg(args, "model_search_stage1_top_k", 4)}'
-            f' --model_search_n_estimators "{_arg(args, "model_search_n_estimators", "20,25,30,35,40,45,50,55,60")}"'
+            f' --model_search_n_estimators "{_arg(args, "model_search_n_estimators", "40,45,50,55,60,65,70,75,80")}"'
             f' --model_search_max_depth "{_arg(args, "model_search_max_depth", "2,3,4")}"'
             f' --model_search_learning_rate "{_arg(args, "model_search_learning_rate", "0.025,0.03,0.04,0.05,0.06,0.08,0.10")}"'
             f' --model_search_min_child_weight "{_arg(args, "model_search_min_child_weight", "10,15,20,25,30,40,50")}"'
@@ -153,7 +258,7 @@ def build_pipeline_commands(args):
         's06_opt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --optimize --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_cache_train': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split train --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_window_cache --window_output_root window_outputs',
         's06_cache_valid': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split valid --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_window_cache --window_output_root window_outputs',
-        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --search_splits train,valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 1.5)} --workers {args.n_workers} --hard_samples_only --threshold_offsets={_arg(args, "postprocess_threshold_offsets", "-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3")}',
+        's07_post': f'"{PYTHON}" "{_script_path("s07_postprocess_optimize")}" --artifact_dir "{args.artifact_dir}" --search_splits train,valid --cache_root window_outputs --fp_cost {_arg(args, "postprocess_fp_cost", 1.5)} --workers {args.n_workers} --hard_samples_only --search_budget {_arg(args, "postprocess_search_budget", 240)} --threshold_offsets={_arg(args, "postprocess_threshold_offsets", "-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3")}',
         's06_eval': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_xpt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_deploy',
         's06_feat': '__extractor__',
@@ -1419,7 +1524,10 @@ def main():
     # ── s05 模型搜参 ──
     p.add_argument('--model_search', action=argparse.BooleanOptionalAction, default=True,
                    help='Enable XGBoost hyperparameter search (default: enabled)')
-    p.add_argument('--max_model_nodes', type=int, default=500)
+    p.add_argument(
+        '--max_model_nodes', type=int, default=0,
+        help='Maximum total XGBoost nodes allowed during search; <=0 disables the cap.'
+    )
     p.add_argument('--model_search_strategy', default='staged_group_cv',
                    choices=['staged_group_cv'])
     p.add_argument('--search_budget', default='balanced',
@@ -1427,6 +1535,8 @@ def main():
                    help='模型搜索预算: fast 更快(repeats=1), balanced 默认(repeats=3), accuracy 更稳(repeats=5)')
     p.add_argument('--model_search_max_candidates', type=int, default=None)
     p.add_argument('--model_search_stage2_top_k', type=int, default=None)
+    p.add_argument('--model_search_full_top_k', type=int, default=None,
+                   help='特征数量搜参时，quick 评估后执行完整模型搜参的 top-k 数量')
     p.add_argument('--model_search_cv_folds', type=int, default=3)
     p.add_argument('--model_search_cv_repeats', type=int, default=None)
     p.add_argument('--model_search_random_state', type=int, default=42)
@@ -1434,7 +1544,7 @@ def main():
     p.add_argument('--model_search_fp_cost', type=float, default=2.0)
     p.add_argument('--model_search_size_cost', type=float, default=0.1)
     p.add_argument('--model_search_stage1_top_k', type=int, default=4)
-    p.add_argument('--model_search_n_estimators', default='20,25,30,35,40,45,50,55,60')
+    p.add_argument('--model_search_n_estimators', default='40,45,50,55,60,65,70,75,80')
     p.add_argument('--model_search_max_depth', default='2,3,4')
     p.add_argument('--model_search_learning_rate', default='0.025,0.03,0.04,0.05,0.06,0.08,0.10')
     p.add_argument('--model_search_min_child_weight', default='10,15,20,25,30,40,50')
@@ -1453,6 +1563,8 @@ def main():
     p.add_argument('--postprocess_threshold_offsets', type=str,
                    default='-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3',
                    help='s07 threshold offsets for hard-sample postprocess search')
+    p.add_argument('--postprocess_search_budget', type=int, default=None,
+                   help='s07 representative postprocess candidate budget; <=0 searches full grid')
     p.add_argument('--split', default='test', choices=['train', 'valid', 'test'],
                    help='s06 评估用的数据 split')
     p.add_argument('--model_search_feature_counts', type=str, default='',
@@ -1534,7 +1646,10 @@ def main():
 
         command = cmd[key]
         if args.dry_run:
-            print(f'[DRY] {display_name}: {command}')
+            if key == "s05" and str(getattr(args, "model_search_feature_counts", "") or "").strip():
+                _dry_run_s05_feature_count_search(display_name, command, args)
+            else:
+                print(f'[DRY] {display_name}: {command}')
             if key == stop_after:
                 print(f'\n[STOP] 已运行到 {stop_after}，按 --stop_after 提前结束')
                 break
@@ -1569,7 +1684,10 @@ def main():
                 break
             continue
 
-        ok = _run(display_name, command)
+        if key == "s05" and str(getattr(args, "model_search_feature_counts", "") or "").strip():
+            ok = _run_s05_feature_count_search(display_name, command, args)
+        else:
+            ok = _run(display_name, command)
         if not ok:
             print(f'\n[FAIL] 流水线中断于: {display_name}')
             sys.exit(1)

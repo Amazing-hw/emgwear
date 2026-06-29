@@ -287,6 +287,52 @@ def _unique_param_values(grid, key):
     return values
 
 
+def _freeze_params(params):
+    return tuple(sorted(params.items()))
+
+
+def _postprocess_grid_priority(params):
+    return (
+        abs(float(params.get("threshold_offset", 0.0))),
+        int(params.get("K_on", 1)),
+        -int(params.get("K_off", 1)),
+        float(params.get("T_on", 0.0)) - float(params.get("T_off", 0.0)),
+        int(params.get("median_k", 1)),
+        float(params.get("cooldown_sec", 0.0)),
+        float(params.get("alpha", 0.0)),
+    )
+
+
+def select_postprocess_search_grid(grid, search_budget=None):
+    grid = list(grid)
+    if search_budget is None:
+        return grid
+    budget = int(search_budget)
+    if budget <= 0 or budget >= len(grid):
+        return grid
+
+    selected = []
+    seen = set()
+
+    def add(params):
+        key = _freeze_params(params)
+        if key in seen or len(selected) >= budget:
+            return
+        selected.append(params)
+        seen.add(key)
+
+    if grid:
+        add(grid[0])
+        add(grid[len(grid) // 2])
+        add(grid[-1])
+
+    for params in sorted(grid, key=_postprocess_grid_priority):
+        add(params)
+        if len(selected) >= budget:
+            break
+    return selected
+
+
 def _causal_median_filter_fast(values, k):
     k = int(k or 1)
     arr = np.asarray(values, dtype=np.float64)
@@ -507,10 +553,11 @@ def score_metrics(metrics, fp_cost=1.5):
 
 
 def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=None,
-                       threshold_offsets=None, max_candidates=None, progress_interval=200):
-    grid = list(iter_param_grid(threshold_offsets=threshold_offsets))
-    if max_candidates is not None:
-        grid = grid[:max(0, int(max_candidates))]
+                       threshold_offsets=None, max_candidates=None, progress_interval=200,
+                       search_budget=None):
+    full_grid = list(iter_param_grid(threshold_offsets=threshold_offsets))
+    budget = search_budget if search_budget is not None else max_candidates
+    grid = select_postprocess_search_grid(full_grid, search_budget=budget)
     n_workers = max(1, int(n_workers or 1))
     total = len(grid)
     if total == 0:
@@ -527,7 +574,8 @@ def search_postprocess(caches, fp_cost=1.5, skip_initial_windows=0, n_workers=No
 
     print(
         "[s07] 搜参开始: "
-        f"candidates={total}, samples={len(caches)}, workers={n_workers}, "
+        f"candidates={total}, full_grid={len(full_grid)}, search_budget={budget}, "
+        f"samples={len(caches)}, workers={n_workers}, "
         f"precomputed_series={len(offsets) * len(median_ks)}, "
         f"progress_interval={max(1, int(progress_interval or 1))}",
         flush=True,
@@ -683,7 +731,9 @@ def main(args=None):
     parser.add_argument("--progress_interval", type=int, default=200,
                         help="Print search progress every N completed candidates.")
     parser.add_argument("--max_candidates", type=int, default=None,
-                        help="Optional debug limit for postprocess search candidates; default searches full grid.")
+                        help="Deprecated alias for --search_budget.")
+    parser.add_argument("--search_budget", type=int, default=240,
+                        help="Maximum representative postprocess candidates; <=0 searches full grid.")
 
     if args is None:
         args = parser.parse_args(_normalize_negative_csv_options(sys.argv[1:], {"--threshold_offsets"}))
@@ -710,7 +760,8 @@ def main(args=None):
     best, results = search_postprocess(
         search_caches, fp_cost=args.fp_cost, skip_initial_windows=args.skip_initial_windows,
         n_workers=args.workers, threshold_offsets=threshold_offsets,
-        max_candidates=args.max_candidates, progress_interval=args.progress_interval,
+        max_candidates=args.max_candidates, search_budget=args.search_budget,
+        progress_interval=args.progress_interval,
     )
     if best is None:
         raise RuntimeError("postprocess search produced no candidates")
@@ -769,6 +820,10 @@ def main(args=None):
         "threshold_offsets": threshold_offsets,
         "fp_cost": float(args.fp_cost),
         "skip_initial_windows": int(args.skip_initial_windows),
+        "search_budget": int(args.search_budget),
+        "max_candidates_alias": None if args.max_candidates is None else int(args.max_candidates),
+        "evaluated_candidates": int(len(results)),
+        "full_grid_candidates": int(len(list(iter_param_grid(threshold_offsets=threshold_offsets)))),
         "best_params": best_params,
         "best_metrics": {
             k: float(best[k])

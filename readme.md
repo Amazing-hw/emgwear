@@ -281,6 +281,8 @@ p_state = clip(prob_raw - (model_threshold + threshold_offset) + 0.5, 0, 1)
 | `--window_sec` | `3` | Stage2 窗口秒数 |
 | `--stride_sec` | `1` | Stage2 窗口步长秒数 |
 | `--model_search / --no-model_search` | 开启 | 是否启用 XGBoost 搜参 |
+| `--model_search_n_estimators` | `40,45,50,55,60,65,70,75,80` | XGBoost 树数量搜索范围 |
+| `--max_model_nodes` | `0` | XGBoost 总节点数上限；`<=0` 表示不限制 |
 | `--search_budget` | `balanced` | `fast`、`balanced`、`accuracy` |
 | `--with_postprocess` | 关闭 | 开启完整后处理搜参流程 |
 | `--postprocess_fp_cost` | `1.5` | s07 假阳性惩罚权重 |
@@ -297,16 +299,28 @@ fast:
   model_search_max_candidates = 150
   model_search_stage2_top_k = 20
   model_search_cv_repeats = 1
+  model_search_full_top_k = 1
+  postprocess_search_budget = 120
 
 balanced:
   model_search_max_candidates = 300
   model_search_stage2_top_k = 40
   model_search_cv_repeats = 3
+  model_search_full_top_k = 1
+  postprocess_search_budget = 240
 
 accuracy:
   model_search_max_candidates = 600
   model_search_stage2_top_k = 80
   model_search_cv_repeats = 5
+  model_search_full_top_k = 2
+  postprocess_search_budget = 720
+```
+
+多特征数量搜参时，`s08` 会先对每个 `k` 执行 quick 训练（不做完整模型参数搜索），再只对 Top-K 的 `k` 运行完整 XGBoost 搜参：
+
+```bash
+python s08_run_pipeline.py --dataset_dir dataset --artifact_dir artifacts --model_search_feature_counts 8,12,15 --model_search_full_top_k 1
 ```
 
 ## 手动分步命令
@@ -331,10 +345,10 @@ python s06_deploy_eval.py --artifact_dir artifacts --split valid --export_window
 后处理搜参：
 
 ```bash
-python s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 1.5 --workers 4 --hard_samples_only --threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
+python s07_postprocess_optimize.py --artifact_dir artifacts --search_splits train,valid --cache_root window_outputs --fp_cost 1.5 --workers 4 --hard_samples_only --search_budget 240 --threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3
 ```
 
-临时调试搜参速度时可以加 `--max_candidates 200 --progress_interval 20`，正式结果不要限制 `--max_candidates`。
+`--search_budget` 会按代表性选择子网格，不是简单截取前 N 个候选。调试时可以用 `--search_budget 60 --progress_interval 20`；需要全量搜索时用 `--search_budget 0`。`--max_candidates` 仅保留为兼容别名。
 
 最终 test 评估和部署导出：
 

@@ -63,6 +63,7 @@ def test_pipeline_commands_include_npz_cache_postprocess_path():
     assert "--search_splits train,valid" in commands["s07_post"]
     assert "--hard_samples_only" in commands["s07_post"]
     assert "--workers 2" in commands["s07_post"]
+    assert "--search_budget 240" in commands["s07_post"]
     assert "--threshold_offsets=-0.3,-0.2,-0.1,-0.05,0,0.05,0.1,0.2,0.3" in commands["s07_post"]
 
 
@@ -118,6 +119,8 @@ def test_pipeline_commands_enable_model_search_by_default():
     assert "--model_search_cv_folds 3" in cmd
     assert "--model_search_cv_repeats 3" in cmd
     assert "--model_search_random_state 42" in cmd
+    assert "--max_model_nodes 0" in cmd
+    assert '--model_search_n_estimators "40,45,50,55,60,65,70,75,80"' in cmd
 
 
 def test_with_postprocess_enables_accuracy_first_model_search_preset():
@@ -184,6 +187,46 @@ def test_fast_search_budget_reduces_candidates_for_short_runs():
     assert "--model_search_max_candidates 150" in cmd
     assert "--model_search_stage2_top_k 20" in cmd
     assert "--model_search_cv_repeats 1" in cmd
+
+
+def test_dry_run_feature_count_search_prints_quick_and_full_search_commands():
+    script = Path(__file__).resolve().parents[1] / "s08_run_pipeline.py"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--dry_run",
+            "--stop_after",
+            "s05",
+            "--n_workers",
+            "1",
+            "--model_search_feature_counts",
+            "8,12,15",
+            "--model_search_full_top_k",
+            "2",
+        ],
+        cwd=script.parent,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+
+    assert result.returncode == 0
+    assert "quick feature-count search k=8" in result.stdout
+    assert "quick feature-count search k=12" in result.stdout
+    assert "quick feature-count search k=15" in result.stdout
+    assert "full model search #1/2" in result.stdout
+    assert "full model search #2/2" in result.stdout
+    assert "--no-model_search" in result.stdout
+    quick_lines = [
+        line for line in result.stdout.splitlines()
+        if "quick feature-count search" in line
+    ]
+    assert quick_lines
+    assert all("--model_search_feature_counts" not in line for line in quick_lines)
+    assert '--model_search_feature_counts "15"' in result.stdout
 
 
 def test_readme_documents_current_search_budget_cli():
