@@ -953,7 +953,7 @@ def extract_emg_time_domain_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
 
     # P2P: 鲁棒峰峰值 (p95-p05) — 佩戴时动态范围大
     feat[f"{prefix}_P2P"] = float(np.percentile(x, 95) - np.percentile(x, 5))
-    # AMP_CV: 包络变异系数 — 佩戴时肌电呈 bursty (高 CV)，噪声平稳 (低 CV)
+    # AMP_CV: 包络变异系数，描述 3s 窗整体幅值波动程度
     feat[f"{prefix}_AMP_CV"] = float(np.std(x) / (np.mean(x) + EPS))
 
     return feat
@@ -1154,6 +1154,9 @@ _EMG_LEAK_KEYS = ["LEAK_100_RATIO", "LEAK_150_RATIO", "LEAK_200_RATIO",
                    "LEAK_250_RATIO", "LEAK_300_RATIO",
                    "LEAK_SUM_RATIO", "LEAK_MAX_RATIO", "LEAK_MAX_FREQ"]
 
+_EMG_SUBWIN_KEYS = ["RMS_SUBWIN_CV", "MDF_SUBWIN_IQR", "WL_SUBWIN_CV"]
+_EMG_SPEC_SHAPE_KEYS = ["SPEC_ENTROPY", "SPEC_FLATNESS", "SPEC_CENTROID", "SPEC_ROLLOFF_85"]
+
 
 def _emg_downsample_for_sampen(x, fs=1000.0):
     """降采样 EMG 到 250Hz 供 SampEn 使用。1000→250Hz 减少 4× 采样点，SampEn 加速 ~16×。"""
@@ -1207,6 +1210,89 @@ def _emg_sample_entropy(x):
     return 0.0
 
 
+def extract_emg_subwindow_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
+    feat = OrderedDict()
+    bp = np.asarray(emg_bp, dtype=np.float64)
+    if len(bp) < int(fs):
+        for k in _EMG_SUBWIN_KEYS:
+            feat[f"{prefix}_{k}"] = 0.0
+        return feat
+
+    win = max(16, int(round(fs)))
+    rms_vals = []
+    wl_vals = []
+    mdf_vals = []
+    for start in range(0, len(bp) - win + 1, win):
+        seg = bp[start:start + win]
+        if len(seg) < win:
+            continue
+        rms_vals.append(float(np.sqrt(np.mean(seg * seg))))
+        wl_vals.append(float(np.sum(np.abs(np.diff(seg)))))
+        freq_feat = extract_emg_frequency_features(seg, fs=fs, prefix="_TMP")
+        mdf_vals.append(float(freq_feat["_TMP_MDF"]))
+
+    if len(rms_vals) < 2:
+        for k in _EMG_SUBWIN_KEYS:
+            feat[f"{prefix}_{k}"] = 0.0
+        return feat
+
+    rms_arr = np.asarray(rms_vals, dtype=np.float64)
+    wl_arr = np.asarray(wl_vals, dtype=np.float64)
+    mdf_arr = np.asarray(mdf_vals, dtype=np.float64)
+    feat[f"{prefix}_RMS_SUBWIN_CV"] = float(np.std(rms_arr) / (np.mean(rms_arr) + EPS))
+    feat[f"{prefix}_MDF_SUBWIN_IQR"] = robust_iqr(mdf_arr)
+    feat[f"{prefix}_WL_SUBWIN_CV"] = float(np.std(wl_arr) / (np.mean(wl_arr) + EPS))
+    return feat
+
+
+def extract_emg_spectral_shape_features(emg_bp, fs=1000.0, prefix="EMG"):
+    feat = OrderedDict()
+    freqs, pxx = _emg_welch_spectrum(emg_bp, fs, nperseg=512)
+    if freqs is None:
+        for k in _EMG_SPEC_SHAPE_KEYS:
+            feat[f"{prefix}_{k}"] = 0.0
+        return feat
+
+    total = float(np.sum(pxx)) + EPS
+    p = np.asarray(pxx, dtype=np.float64) / total
+    entropy = -float(np.sum(p * np.log(p + EPS)) / np.log(len(p) + EPS))
+    flatness = float(np.exp(np.mean(np.log(pxx + EPS))) / (np.mean(pxx) + EPS))
+    centroid = float(np.sum(freqs * pxx) / total)
+    cumsum = np.cumsum(pxx)
+    roll_idx = np.searchsorted(cumsum, cumsum[-1] * 0.85)
+    rolloff = float(freqs[min(roll_idx, len(freqs) - 1)])
+
+    feat[f"{prefix}_SPEC_ENTROPY"] = entropy
+    feat[f"{prefix}_SPEC_FLATNESS"] = flatness
+    feat[f"{prefix}_SPEC_CENTROID"] = centroid
+    feat[f"{prefix}_SPEC_ROLLOFF_85"] = rolloff
+    return feat
+
+
+def extract_emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp, fs=1000.0):
+    feat = OrderedDict()
+    if ch0_env is None or ch1_env is None or ch0_bp is None or ch1_bp is None:
+        for k in ["EMG_ENV_CORR", "EMG_MAV_RATIO", "EMG_CONTACT_IMBALANCE"]:
+            feat[k] = 0.0
+        return feat
+
+    n_env = min(len(ch0_env), len(ch1_env))
+    n_bp = min(len(ch0_bp), len(ch1_bp))
+    if n_env < 4 or n_bp < 4:
+        for k in ["EMG_ENV_CORR", "EMG_MAV_RATIO", "EMG_CONTACT_IMBALANCE"]:
+            feat[k] = 0.0
+        return feat
+
+    env0 = np.asarray(ch0_env[:n_env], dtype=np.float64)
+    env1 = np.asarray(ch1_env[:n_env], dtype=np.float64)
+    mav0 = float(np.mean(env0))
+    mav1 = float(np.mean(env1))
+    feat["EMG_ENV_CORR"] = safe_corr(env0, env1, winsorize=True)
+    feat["EMG_MAV_RATIO"] = float(np.clip(safe_div(mav0, mav1), 0.0, 1000.0)) if mav1 > EPS else 0.0
+    feat["EMG_CONTACT_IMBALANCE"] = float(abs(mav0 - mav1) / (mav0 + mav1 + EPS))
+    return feat
+
+
 def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
     """提取双通道 EMG 的完整特征集（含窄带串扰特征）。emg_window: (N, 2) @ 1000Hz
 
@@ -1221,10 +1307,11 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
                        "MNF", "MDF", "PKF", "PSR",
                        "POW_20_60", "POW_60_150", "POW_150_450", "POW_LH_RATIO",
                        "SE95",
-                       "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS:
+                       "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
                 feat[f"EMG{ch}_{k}"] = 0.0
         feat["EMG_CROSS_CORR"] = 0.0
         feat["EMG_RMS_RATIO"] = 0.0
+        feat.update(extract_emg_channel_balance_features(None, None, None, None, fs))
         return (feat, None) if return_signals else feat
 
     emg = np.asarray(emg_window, dtype=np.float64)
@@ -1246,6 +1333,8 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
     feat.update(extract_emg_mains_features(ch0_leak, fs, "EMG0"))
     feat.update(extract_emg_leakage_features(ch0_leak, fs, "EMG0"))
     feat.update(extract_emg_baseline_drift(ch0_demean, ch0_leak, fs, "EMG0"))
+    feat.update(extract_emg_subwindow_features(ch0_bp, ch0_env, fs, "EMG0"))
+    feat.update(extract_emg_spectral_shape_features(ch0_bp, fs, "EMG0"))
     feat["EMG0_SampEn"] = _emg_sample_entropy(emg0_ds) if emg0_ds is not None else 0.0
 
     if ch1_bp is not None:
@@ -1255,6 +1344,8 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
         feat.update(extract_emg_mains_features(ch1_leak, fs, "EMG1"))
         feat.update(extract_emg_leakage_features(ch1_leak, fs, "EMG1"))
         feat.update(extract_emg_baseline_drift(ch1_demean, ch1_leak, fs, "EMG1"))
+        feat.update(extract_emg_subwindow_features(ch1_bp, ch1_env, fs, "EMG1"))
+        feat.update(extract_emg_spectral_shape_features(ch1_bp, fs, "EMG1"))
         feat["EMG1_SampEn"] = _emg_sample_entropy(emg1_ds) if emg1_ds is not None else 0.0
 
         n = min(len(ch0_bp), len(ch1_bp))
@@ -1272,16 +1363,18 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
         feat["EMG1_KURTOSIS"] = float(np.mean((ch1_bp - np.mean(ch1_bp)) ** 4) / (np.std(ch1_bp) ** 4 + EPS))
         mav1 = feat.get("EMG1_MAV", 0.0)
         feat["EMG1_SNR"] = float(rms1 / mav1) if mav1 > EPS else 0.0
+        feat.update(extract_emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp, fs))
     else:
         for k in ["MAV", "RMS", "VAR", "WL", "ZC", "SSC", "WAMP", "IEMG",
                    "P2P", "AMP_CV",
                    "MNF", "MDF", "PKF", "PSR",
                    "POW_20_60", "POW_60_150", "POW_150_450", "POW_LH_RATIO",
                    "SE95",
-                   "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS:
+                   "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
             feat[f"EMG1_{k}"] = 0.0
         feat["EMG_CROSS_CORR"] = 0.0
         feat["EMG_RMS_RATIO"] = 0.0
+        feat.update(extract_emg_channel_balance_features(None, None, None, None, fs))
 
     # 通道分布特征 ch0（始终计算，与 ch1 是否存在无关）
     rms0 = float(np.sqrt(np.mean(ch0_bp ** 2)))

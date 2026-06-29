@@ -82,6 +82,47 @@ def test_get_feature_cols_excludes_features_without_deploy_formula():
     assert "UNSUPPORTED_MODEL_FEATURE" not in cols
 
 
+def test_emg_consensus_features_have_dedicated_group_and_redundant_features_are_other():
+    import s04_feature_selection as s04
+
+    consensus_features = [
+        "EMG_consensus_RMS_min",
+        "EMG_consensus_RMS_max",
+        "EMG_consensus_RMS_range",
+        "EMG_consensus_RMS_cv",
+        "EMG_consensus_MDF_min",
+        "EMG_consensus_PSR_range",
+    ]
+    for feature in consensus_features:
+        assert s04.feature_to_group(feature) == "emg_consensus"
+
+    redundant_features = [
+        "EMG0_IEMG",
+        "EMG1_IEMG",
+        "EMG0_VAR",
+        "EMG1_VAR",
+        "EMG0_LEAK_MAX_FREQ",
+        "EMG1_LEAK_MAX_FREQ",
+        "EMG0_PWR_50HZ",
+        "EMG1_PWR_50HZ",
+        "EMG0_BASELINE_DRIFT_POW",
+        "EMG1_BASELINE_DRIFT_POW",
+    ]
+    for feature in redundant_features:
+        assert s04.feature_to_group(feature) == "other"
+
+
+def test_default_emg_group_limits_balance_frequency_cross_leakage_and_consensus():
+    import s04_feature_selection as s04
+
+    limits = s04.GROUP_LIMITS_DEFAULT
+
+    assert limits["emg_frequency"] == 4
+    assert limits["emg_cross"] == 2
+    assert limits["emg_leakage"] == 4
+    assert limits["emg_consensus"] == 2
+
+
 def test_group_limit_zero_excludes_features_from_selection_and_ranked_candidates():
     import s04_feature_selection as s04
 

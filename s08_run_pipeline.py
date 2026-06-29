@@ -424,6 +424,13 @@ def _build_feature_code_map():
         "EMG0_POW_20_60": "emg0_freq[4]", "EMG0_POW_60_150": "emg0_freq[5]",
         "EMG0_POW_150_450": "emg0_freq[6]", "EMG0_POW_LH_RATIO": "emg0_freq[7]",
         "EMG0_SE95": "emg0_freq[8]",
+        "EMG0_RMS_SUBWIN_CV": "emg0_subwin[0]",
+        "EMG0_MDF_SUBWIN_IQR": "emg0_subwin[1]",
+        "EMG0_WL_SUBWIN_CV": "emg0_subwin[2]",
+        "EMG0_SPEC_ENTROPY": "emg0_spec_shape[0]",
+        "EMG0_SPEC_FLATNESS": "emg0_spec_shape[1]",
+        "EMG0_SPEC_CENTROID": "emg0_spec_shape[2]",
+        "EMG0_SPEC_ROLLOFF_85": "emg0_spec_shape[3]",
         "EMG0_SampEn": "_emg_sample_entropy(emg0_bp, fs_emg) if emg0_bp is not None else 0.0",
         "EMG0_SKEWNESS": "float(np.mean((emg0_bp-np.mean(emg0_bp))**3)/(np.std(emg0_bp)**3+EPS)) if emg0_bp is not None else 0.0",
         "EMG0_KURTOSIS": "float(np.mean((emg0_bp-np.mean(emg0_bp))**4)/(np.std(emg0_bp)**4+EPS)) if emg0_bp is not None else 0.0",
@@ -444,6 +451,13 @@ def _build_feature_code_map():
         "EMG1_POW_20_60": "emg1_freq[4]", "EMG1_POW_60_150": "emg1_freq[5]",
         "EMG1_POW_150_450": "emg1_freq[6]", "EMG1_POW_LH_RATIO": "emg1_freq[7]",
         "EMG1_SE95": "emg1_freq[8]",
+        "EMG1_RMS_SUBWIN_CV": "emg1_subwin[0]",
+        "EMG1_MDF_SUBWIN_IQR": "emg1_subwin[1]",
+        "EMG1_WL_SUBWIN_CV": "emg1_subwin[2]",
+        "EMG1_SPEC_ENTROPY": "emg1_spec_shape[0]",
+        "EMG1_SPEC_FLATNESS": "emg1_spec_shape[1]",
+        "EMG1_SPEC_CENTROID": "emg1_spec_shape[2]",
+        "EMG1_SPEC_ROLLOFF_85": "emg1_spec_shape[3]",
         "EMG1_SampEn": "_emg_sample_entropy(emg1_bp, fs_emg) if emg1_bp is not None else 0.0",
         "EMG1_SKEWNESS": "float(np.mean((emg1_bp-np.mean(emg1_bp))**3)/(np.std(emg1_bp)**3+EPS)) if emg1_bp is not None else 0.0",
         "EMG1_KURTOSIS": "float(np.mean((emg1_bp-np.mean(emg1_bp))**4)/(np.std(emg1_bp)**4+EPS)) if emg1_bp is not None else 0.0",
@@ -451,6 +465,9 @@ def _build_feature_code_map():
         # EMG cross
         "EMG_CROSS_CORR": "_safe_corr(emg0_bp, emg1_bp, winsorize=True) if emg0_bp is not None and emg1_bp is not None else 0.0",
         "EMG_RMS_RATIO": "_safe_div(float(np.sqrt(np.mean(emg0_bp**2))), float(np.sqrt(np.mean(emg1_bp**2)))) if emg0_bp is not None and emg1_bp is not None else 0.0",
+        "EMG_ENV_CORR": "emg_channel_balance[0]",
+        "EMG_MAV_RATIO": "emg_channel_balance[1]",
+        "EMG_CONTACT_IMBALANCE": "emg_channel_balance[2]",
         # ACC (gravity/motion separated)
         "ACC_GRAV_MAG_MEAN": "float(np.mean(grav_mag))",
         "ACC_GRAV_DOM_RATIO": "float(np.max(np.abs(gm))/(np.sum(np.abs(gm))+1e-8))",
@@ -759,8 +776,8 @@ def _emg_frequency_features(bp, fs=1000):
     x = np.asarray(bp, dtype=np.float64)
     try:
         from scipy.signal import welch
-        nperseg = min(512, len(x) // 2)
-        if nperseg < 16:
+        nperseg = 512
+        if len(x) < nperseg:
             return (0.0,) * 9
         noverlap = nperseg // 2
         f, Pxx = welch(x, fs=fs, nperseg=nperseg, noverlap=noverlap)
@@ -786,6 +803,75 @@ def _emg_frequency_features(bp, fs=1000):
     se95_idx = np.searchsorted(cumsum, cumsum[-1] * 0.95)
     se95 = float(bf[min(se95_idx, len(bf) - 1)])
     return mnf, mdf, pkf, psr, pow_20_60, pow_60_150, pow_150_450, pow_lh, se95
+
+def _emg_subwindow_features(bp, env, fs=1000):
+    if bp is None or len(bp) < int(fs):
+        return 0.0, 0.0, 0.0
+    x = np.asarray(bp, dtype=np.float64)
+    win = max(16, int(round(fs)))
+    rms_vals = []
+    wl_vals = []
+    mdf_vals = []
+    for start in range(0, len(x) - win + 1, win):
+        seg = x[start:start + win]
+        if len(seg) < win:
+            continue
+        rms_vals.append(float(np.sqrt(np.mean(seg * seg))))
+        wl_vals.append(float(np.sum(np.abs(np.diff(seg)))))
+        mdf_vals.append(float(_emg_frequency_features(seg, fs)[1]))
+    if len(rms_vals) < 2:
+        return 0.0, 0.0, 0.0
+    rms_arr = np.asarray(rms_vals, dtype=np.float64)
+    wl_arr = np.asarray(wl_vals, dtype=np.float64)
+    mdf_arr = np.asarray(mdf_vals, dtype=np.float64)
+    return (
+        float(np.std(rms_arr) / (np.mean(rms_arr) + EPS)),
+        _robust_iqr(mdf_arr),
+        float(np.std(wl_arr) / (np.mean(wl_arr) + EPS)),
+    )
+
+def _emg_spectral_shape_features(bp, fs=1000):
+    if bp is None or len(bp) < 16:
+        return 0.0, 0.0, 0.0, 0.0
+    x = np.asarray(bp, dtype=np.float64)
+    try:
+        from scipy.signal import welch
+        nperseg = 512
+        if len(x) < nperseg:
+            return 0.0, 0.0, 0.0, 0.0
+        f, Pxx = welch(x, fs=fs, nperseg=nperseg, noverlap=nperseg // 2)
+    except Exception:
+        return 0.0, 0.0, 0.0, 0.0
+    mask = (f >= 20) & (f <= 450)
+    if not np.any(mask) or np.sum(Pxx[mask]) < EPS:
+        return 0.0, 0.0, 0.0, 0.0
+    bf = f[mask]
+    bs = Pxx[mask]
+    total = float(np.sum(bs)) + EPS
+    p = bs / total
+    entropy = -float(np.sum(p * np.log(p + EPS)) / np.log(len(p) + EPS))
+    flatness = float(np.exp(np.mean(np.log(bs + EPS))) / (np.mean(bs) + EPS))
+    centroid = float(np.sum(bf * bs) / total)
+    cumsum = np.cumsum(bs)
+    roll_idx = np.searchsorted(cumsum, cumsum[-1] * 0.85)
+    rolloff = float(bf[min(roll_idx, len(bf) - 1)])
+    return entropy, flatness, centroid, rolloff
+
+def _emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp):
+    if ch0_env is None or ch1_env is None or ch0_bp is None or ch1_bp is None:
+        return 0.0, 0.0, 0.0
+    n_env = min(len(ch0_env), len(ch1_env))
+    n_bp = min(len(ch0_bp), len(ch1_bp))
+    if n_env < 4 or n_bp < 4:
+        return 0.0, 0.0, 0.0
+    env0 = np.asarray(ch0_env[:n_env], dtype=np.float64)
+    env1 = np.asarray(ch1_env[:n_env], dtype=np.float64)
+    mav0 = float(np.mean(env0))
+    mav1 = float(np.mean(env1))
+    env_corr = _safe_corr(env0, env1, winsorize=True)
+    mav_ratio = float(np.clip(_safe_div(mav0, mav1), 0.0, 1000.0)) if mav1 > EPS else 0.0
+    imbalance = float(abs(mav0 - mav1) / (mav0 + mav1 + EPS))
+    return env_corr, mav_ratio, imbalance
 
 def _resample_poly(data, up, down):
     from scipy.signal import resample_poly as _rp
@@ -1130,6 +1216,11 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         emg1_leak = _compute_leak_ratios(emg1_leak_ref, fs_emg, EMG_LEAK_FREQS) if emg1_leak_ref is not None else (0,)*5
         emg0_freq = _emg_frequency_features(emg0_bp, fs_emg)
         emg1_freq = _emg_frequency_features(emg1_bp, fs_emg) if emg1_bp is not None else (0,)*9
+        emg0_subwin = _emg_subwindow_features(emg0_bp, emg0_env, fs_emg)
+        emg1_subwin = _emg_subwindow_features(emg1_bp, emg1_env, fs_emg) if emg1_bp is not None else (0.0, 0.0, 0.0)
+        emg0_spec_shape = _emg_spectral_shape_features(emg0_bp, fs_emg)
+        emg1_spec_shape = _emg_spectral_shape_features(emg1_bp, fs_emg) if emg1_bp is not None else (0.0, 0.0, 0.0, 0.0)
+        emg_channel_balance = _emg_channel_balance_features(emg0_env, emg1_env, emg0_bp, emg1_bp)
         if emg0_env is not None:
             emg0_env_ds = _resample_poly(emg0_env, fs, fs_emg)
             emg0_env_smooth = _smooth_envelope(emg0_env, fs_emg)
@@ -1141,6 +1232,9 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         emg1_leak_ref = emg1_bp = emg1_env = emg1_demean = None
         emg0_leak = emg1_leak = (0,) * 5
         emg0_freq = emg1_freq = (0,) * 9
+        emg0_subwin = emg1_subwin = (0.0, 0.0, 0.0)
+        emg0_spec_shape = emg1_spec_shape = (0.0, 0.0, 0.0, 0.0)
+        emg_channel_balance = (0.0, 0.0, 0.0)
         emg0_env_ds = emg0_env_smooth_ds = None
 
     # ---- ACC (gravity/motion separation) ----

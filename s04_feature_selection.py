@@ -70,14 +70,15 @@ FEATURE_GROUPS = {
         "EMG1_MAV", "EMG1_RMS", "EMG1_SNR",
         "EMG1_SKEWNESS", "EMG1_KURTOSIS",
     ],
-    # EMG 肌肉活动: 波形复杂度 (16) — limit 2
-    # 活体肌肉产生非平稳 burst 信号，区别于平稳噪声
-    # P2P: 包络动态范围，AMP_CV: 包络变异系数（bursty vs 平稳）
+    # EMG 肌肉活动: 波形复杂度 + 3s 窗内稳定性 — limit 2
+    # P2P/AMP_CV 描述 3s 窗整体包络动态范围；SUBWIN 描述 1s 子窗间稳定性。
     "emg_activity": [
-        "EMG0_VAR", "EMG0_WL", "EMG0_ZC", "EMG0_SSC", "EMG0_WAMP", "EMG0_IEMG",
+        "EMG0_WL", "EMG0_ZC", "EMG0_SSC", "EMG0_WAMP",
         "EMG0_P2P", "EMG0_AMP_CV",
-        "EMG1_VAR", "EMG1_WL", "EMG1_ZC", "EMG1_SSC", "EMG1_WAMP", "EMG1_IEMG",
+        "EMG0_RMS_SUBWIN_CV", "EMG0_MDF_SUBWIN_IQR", "EMG0_WL_SUBWIN_CV",
+        "EMG1_WL", "EMG1_ZC", "EMG1_SSC", "EMG1_WAMP",
         "EMG1_P2P", "EMG1_AMP_CV",
+        "EMG1_RMS_SUBWIN_CV", "EMG1_MDF_SUBWIN_IQR", "EMG1_WL_SUBWIN_CV",
     ],
     # EMG 频域 (18) — limit 3
     # 佩戴时功率集中在 20-200Hz 且各子频段呈特征性分布，非佩戴时频谱平坦各段均匀
@@ -86,26 +87,42 @@ FEATURE_GROUPS = {
         "EMG0_MNF", "EMG0_MDF", "EMG0_PKF", "EMG0_PSR",
         "EMG0_POW_20_60", "EMG0_POW_60_150", "EMG0_POW_150_450", "EMG0_POW_LH_RATIO",
         "EMG0_SE95",
+        "EMG0_SPEC_ENTROPY", "EMG0_SPEC_FLATNESS",
+        "EMG0_SPEC_CENTROID", "EMG0_SPEC_ROLLOFF_85",
         "EMG1_MNF", "EMG1_MDF", "EMG1_PKF", "EMG1_PSR",
         "EMG1_POW_20_60", "EMG1_POW_60_150", "EMG1_POW_150_450", "EMG1_POW_LH_RATIO",
         "EMG1_SE95",
+        "EMG1_SPEC_ENTROPY", "EMG1_SPEC_FLATNESS",
+        "EMG1_SPEC_CENTROID", "EMG1_SPEC_ROLLOFF_85",
     ],
     # EMG 非线性 (2) — limit 1
     # 活体 EMG 有中等 SampEn，噪声要么极低(0)要么极高(随机)
     "emg_complexity": ["EMG0_SampEn", "EMG1_SampEn"],
     # EMG 通道一致性 (2) — limit 1
     # 佩戴时两通道高度相关，非佩戴时独立噪声
-    "emg_cross": ["EMG_CROSS_CORR", "EMG_RMS_RATIO"],
+    "emg_cross": [
+        "EMG_CROSS_CORR", "EMG_RMS_RATIO",
+        "EMG_ENV_CORR", "EMG_MAV_RATIO",
+        "EMG_CONTACT_IMBALANCE",
+    ],
     # EMG PPG 窄带串扰 (16) — limit 6
     # PPG LED 100Hz 切换在 EMG 上的串扰被显式建模为耦合特征
     # 佩戴时串扰路径稳定（皮肤耦合），非佩戴时串扰可能异常
     "emg_leakage": [
         "EMG0_LEAK_100_RATIO", "EMG0_LEAK_150_RATIO", "EMG0_LEAK_200_RATIO",
         "EMG0_LEAK_250_RATIO", "EMG0_LEAK_300_RATIO",
-        "EMG0_LEAK_SUM_RATIO", "EMG0_LEAK_MAX_RATIO", "EMG0_LEAK_MAX_FREQ",
+        "EMG0_LEAK_SUM_RATIO", "EMG0_LEAK_MAX_RATIO",
         "EMG1_LEAK_100_RATIO", "EMG1_LEAK_150_RATIO", "EMG1_LEAK_200_RATIO",
         "EMG1_LEAK_250_RATIO", "EMG1_LEAK_300_RATIO",
-        "EMG1_LEAK_SUM_RATIO", "EMG1_LEAK_MAX_RATIO", "EMG1_LEAK_MAX_FREQ",
+        "EMG1_LEAK_SUM_RATIO", "EMG1_LEAK_MAX_RATIO",
+    ],
+
+    # EMG 双通道汇总。仅开放少量代表性 min/max/range/cv，避免 32 个 consensus 全落到 other。
+    "emg_consensus": [
+        "EMG_consensus_RMS_min", "EMG_consensus_RMS_max",
+        "EMG_consensus_RMS_range", "EMG_consensus_RMS_cv",
+        "EMG_consensus_MDF_min", "EMG_consensus_MDF_max", "EMG_consensus_MDF_range",
+        "EMG_consensus_PSR_min", "EMG_consensus_PSR_max", "EMG_consensus_PSR_range",
     ],
 
     # === PPG 活体检测特征（血流光学信号）===
@@ -184,10 +201,10 @@ FEATURE_GROUPS = {
     #   - ACC-PPG coherence: 回放 PPG 不响应当前 ACC 微动 → 相干 ≈ 0
     # 注: 无伪造标签训练数据时这些特征 importance 不会高，靠 min_anti_spoof_features 强制保留
     "anti_spoof": [
-        "EMG0_PWR_50HZ", "EMG0_50HZ_RATIO", "EMG0_50HZ_HARM_RATIO",
-        "EMG1_PWR_50HZ", "EMG1_50HZ_RATIO", "EMG1_50HZ_HARM_RATIO",
-        "EMG0_BASELINE_DRIFT_POW", "EMG0_DRIFT_HF_RATIO",
-        "EMG1_BASELINE_DRIFT_POW", "EMG1_DRIFT_HF_RATIO",
+        "EMG0_50HZ_RATIO", "EMG0_50HZ_HARM_RATIO",
+        "EMG1_50HZ_RATIO", "EMG1_50HZ_HARM_RATIO",
+        "EMG0_DRIFT_HF_RATIO",
+        "EMG1_DRIFT_HF_RATIO",
         "PPG_DICROTIC_RATIO", "PPG_AUG_INDEX_MEAN", "PPG_PULSE_WIDTH_CV",
         "PPG_RR_RMSSD", "PPG_RR_CV", "PPG_RR_PNN30",
         "ACC_PPG_COH_MICRO", "ACC_PPG_COH_HR",
@@ -201,10 +218,11 @@ GROUP_LIMITS_DEFAULT = {
     # EMG — 佩戴检测核心，给最多名额
     "emg_contact": 3,
     "emg_activity": 2,
-    "emg_frequency": 3,
+    "emg_frequency": 4,
     "emg_complexity": 1,
-    "emg_cross": 1,
-    "emg_leakage": 6,
+    "emg_cross": 2,
+    "emg_leakage": 4,
+    "emg_consensus": 2,
     # PPG — 活体检测核心
     "ppg_quality": 2,
     "ppg_heartbeat": 2,
