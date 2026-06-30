@@ -1263,7 +1263,7 @@ def build_feature_formula_map(selected_features):
     # ---- EMG features ----
     # 注: emg_bp_clean 指指定窄带滤波后的 bp_clean，用于常规时频特征 MNF/MDF/PKF 等
     #     emg_bp_leak_ref 指 highpass(20Hz) 后、bandstop/notch 前参考，含窄带能量，用于 mains + leak 特征
-    #     emg_demean 指仅去均值未做带通的原始信号，用于 baseline drift
+    #     emg_raw_ref 指未去均值/未去毛刺的原始 EMG，用于 baseline drift
     EMG_TEMPLATES = OrderedDict([
         ("{ch}_MAV",   "mean(|emg_env|)"),
         ("{ch}_RMS",   "sqrt(mean(emg_bp²))"),
@@ -1313,8 +1313,8 @@ def build_feature_formula_map(selected_features):
         ("{ch}_40_60HZ_RATIO",    "power(40-60Hz) / power(2-450Hz) on emg_bp_leak_ref"),
         # 谐波 ratio 包含 50/150/250Hz（150/250Hz 可能含 PPG 串扰，由 LEAK_* 特征分离）
         ("{ch}_50HZ_HARM_RATIO",  "(P(49.5-50.5)+P(149.5-150.5)+P(249.5-250.5)) / P(2-450) on emg_bp_leak_ref"),
-        # Baseline drift（在 emg_demean 上算，1-10Hz 已被 emg_bp 砍掉）
-        ("{ch}_BASELINE_DRIFT_POW","log1p(mean(bandpass(emg_demean, 1-10Hz, 2nd_order, fs=1000)²))"),
+        # Baseline drift（在 emg_raw_ref 上算，1-10Hz 已被 emg_bp 砍掉）
+        ("{ch}_BASELINE_DRIFT_POW","log1p(mean(bandpass(emg_raw_ref, 1-10Hz, 2nd_order, fs=1000)²))"),
         ("{ch}_DRIFT_HF_RATIO",    "mean(lf²) / mean(emg_bp_leak_ref²) — 1-10Hz / 20-450Hz 能量比"),
         # PPG 窄带串扰显式特征（在 emg_bp_leak_ref 上算，bandstop/notch 前）
         ("{ch}_LEAK_100_RATIO", "power(99.2-100.8Hz) / power(20-450Hz) on emg_bp_leak_ref"),
@@ -1661,7 +1661,7 @@ def export_deploy_artifacts(artifact_dir):
         }),
         ("preprocessing", {
             "ppg": "remove_burr → remove_step → medfilt(50ms) → movavg(30ms) → BP(0.4-6Hz, order=4)",
-            "emg": "demean → robust_clean → highpass(20Hz, order=2) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → abs(envelope); leak_ref is captured before bandstop/notch",
+            "emg": "highpass(20Hz, order=2) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → abs(envelope); leak_ref is captured before bandstop/notch",
             "acc": "magnitude → demean → BP(0.5-5Hz, order=2)",
         }),
         ("n_selected_features", len(selected_features)),

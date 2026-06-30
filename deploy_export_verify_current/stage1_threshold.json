@@ -1,0 +1,86 @@
+{
+  "threshold_search_enabled": false,
+  "threshold_search_note": "Stage1 uses a fixed engineering threshold. DC threshold search is disabled.",
+  "dc_threshold": 2200000.0,
+  "ac_dc_threshold": 0.35,
+  "deploy_stage1_threshold": {
+    "dc_threshold": 2200000.0,
+    "ac_dc_threshold": 0.35,
+    "fs": 100,
+    "window_sec": 3.0,
+    "stride_sec": 1.0,
+    "points_100hz": 300,
+    "rule": "dc > dc_threshold and ac_dc_ratio < ac_dc_threshold",
+    "sample_rule": "sample_pass = any(window_pass)",
+    "target_requirement": "target=1 sample pass rate must be 100%",
+    "search_source": "fixed_engineering_threshold"
+  },
+  "train_stage1_threshold": {
+    "dc_threshold": 1980000.0,
+    "ac_dc_threshold": 0.44999999999999996,
+    "rule": "宽松 Stage1，仅用于 second-stage 特征提取/筛选/训练，不用于最终部署评估",
+    "train_dc_ratio": 0.9,
+    "train_acdc_margin": 0.1
+  },
+  "deploy_train_metrics": {
+    "dc_threshold": 2200000.0,
+    "ac_dc_threshold": 0.35,
+    "window_target1_pass_rate": 1.0,
+    "window_target0_pass_rate": 0.0,
+    "window_target0_reject_rate": 1.0,
+    "sample_target1_pass_rate": 1.0,
+    "sample_target0_pass_rate": 0.0,
+    "sample_target0_reject_rate": 1.0,
+    "num_windows": 80,
+    "num_samples": 16,
+    "num_target1_samples": 8,
+    "num_target0_samples": 8
+  },
+  "deploy_valid_metrics": {
+    "dc_threshold": 2200000.0,
+    "ac_dc_threshold": 0.35,
+    "window_target1_pass_rate": 1.0,
+    "window_target0_pass_rate": 0.0,
+    "window_target0_reject_rate": 1.0,
+    "sample_target1_pass_rate": 1.0,
+    "sample_target0_pass_rate": 0.0,
+    "sample_target0_reject_rate": 1.0,
+    "num_windows": 20,
+    "num_samples": 4,
+    "num_target1_samples": 2,
+    "num_target0_samples": 2
+  },
+  "train_gate_metrics_on_train": {
+    "dc_threshold": 1980000.0,
+    "ac_dc_threshold": 0.44999999999999996,
+    "window_target1_pass_rate": 1.0,
+    "window_target0_pass_rate": 1.0,
+    "window_target0_reject_rate": 0.0,
+    "sample_target1_pass_rate": 1.0,
+    "sample_target0_pass_rate": 1.0,
+    "sample_target0_reject_rate": 0.0,
+    "num_windows": 80,
+    "num_samples": 16,
+    "num_target1_samples": 8,
+    "num_target0_samples": 8
+  },
+  "train_gate_metrics_on_valid": {
+    "dc_threshold": 1980000.0,
+    "ac_dc_threshold": 0.44999999999999996,
+    "window_target1_pass_rate": 1.0,
+    "window_target0_pass_rate": 1.0,
+    "window_target0_reject_rate": 0.0,
+    "sample_target1_pass_rate": 1.0,
+    "sample_target0_pass_rate": 1.0,
+    "sample_target0_reject_rate": 0.0,
+    "num_windows": 20,
+    "num_samples": 4,
+    "num_target1_samples": 2,
+    "num_target0_samples": 2
+  },
+  "notes": [
+    "deploy_stage1_threshold 用于最终部署和端到端 test 评估",
+    "train_stage1_threshold 用于第二阶段 train/valid 特征提取、特征筛选、模型训练",
+    "test 不参与任何阈值搜索、特征筛选、模型阈值选择"
+  ]
+}

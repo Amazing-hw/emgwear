@@ -1,0 +1,79 @@
+{
+  "title": "手表佩戴活体检测 (PPG+EMG+ACC) — 部署配置",
+  "pipeline_overview": [
+    "Stage 1: 6-ch PPG → 通道平均 → 100Hz → 3s 窗 DC/ACDC 阈值粗筛 (1s stride)",
+    "Stage 2: 3s 滑窗 → 单通道 PPG + EMG + ACC 特征提取 → XGBoost 窗口级概率",
+    "Stage 4: WearStateMachine 时序后处理 (EMA + hysteresis)"
+  ],
+  "stage1": {
+    "pipeline_step": 1,
+    "description": "Stage1 IR/PPG DC/ACDC gate: six-channel mean @100Hz, no downsampling",
+    "input": "PPG data, 6 channels @100Hz",
+    "preprocessing": [
+      "ppg_mean = mean(ppg_ch0..ppg_ch5)",
+      "keep 100Hz samples"
+    ],
+    "window": {
+      "duration_sec": 3.0,
+      "points_100hz": 300,
+      "stride_sec": 1.0
+    },
+    "features_per_window": {
+      "DC": {
+        "formula": "min(neighbor_mean), neighbor_mean[i]=(x[i]+x[i+1])/2",
+        "purpose": "minimum adjacent-sample mean"
+      },
+      "AC": {
+        "formula": "median(abs(diff(x)))",
+        "purpose": "median adjacent-sample variation"
+      },
+      "AC_DC_RATIO": {
+        "formula": "AC / (abs(DC) + eps)",
+        "purpose": "normalized AC variation"
+      }
+    },
+    "window_pass_rule": "DC > dc_threshold AND AC_DC_RATIO < ac_dc_threshold",
+    "sample_pass_rule": "any 3s Stage1 window passes -> sample enters Stage2",
+    "thresholds": {
+      "dc_threshold": 2200000.0,
+      "ac_dc_threshold": 0.35
+    },
+    "search_source": "fixed_engineering_threshold"
+  },
+  "stage2_features": {
+    "n_features": 2,
+    "names": [
+      "EMG_consensus_PKF_range",
+      "EMG_consensus_ZC_max"
+    ]
+  },
+  "stage2_model": {
+    "type": "XGBoost",
+    "n_trees": 10,
+    "window_threshold": 0.05,
+    "fill_strategy": "train median"
+  },
+  "stage4_postprocess": {
+    "alpha": 0.6,
+    "median_k": 1,
+    "T_on": 0.55,
+    "T_off": 0.2,
+    "K_on": 1,
+    "K_off": 1,
+    "cooldown_sec": 0.0,
+    "threshold_offset": 0.0,
+    "threshold_transform": "disabled"
+  },
+  "bundle_fingerprint": {
+    "train_time_utc": "2026-06-12T13:15:27Z",
+    "python": "3.13.5",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "numpy": "2.1.3",
+    "pandas": "2.2.3",
+    "sklearn": "1.6.1",
+    "xgboost": "3.2.0",
+    "splits_sha256_head": "7e2a11624aa591d025caa76b28bed70756da6687f1bbb4a06a56ae02b974c159",
+    "feature_pool_train_sha256_head": "278325111d6371a32e5c1f33d59f8b98ac4f21caf4cac43922225dc66af49b80",
+    "git_sha": "3bf07861c37910d4a105e866cfc3dd0857679a79"
+  }
+}

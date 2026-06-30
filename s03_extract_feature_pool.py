@@ -59,7 +59,6 @@ _EMG_CLEAN_BANDSTOP_RANGES = ((49.8, 50.2), (149.8, 150.2))
 _EMG_CLEAN_NOTCH_FREQS = (50.0, 100.0, 200.0, 300.0, 400.0)
 _EMG_CLEAN_NOTCH_Q = 100.0
 _EMG_LEAK_FREQS = (100.0, 150.0, 200.0, 250.0, 300.0)  # PPG 串扰特征频点（不含工频 50Hz）
-_EMG_MAD_CLIP_K = 10.0          # 超过 K×MAD 视为离群点 (电极 pop)
 _ACC_BURR_K = 6.0               # ACC 每轴去毛刺阈值倍数
 DEFAULT_FS_PPG = 100.0
 DEFAULT_FS_EMG = 1000.0
@@ -368,7 +367,7 @@ def highpass_filter(x, fs, cutoff, order=2):
     try:
         return filtfilt(b, a, x)
     except Exception:
-        return x - np.median(x)
+        return x.copy()
 
 
 def bandpass_filter(x, fs, lowcut, highcut, order=2):
@@ -382,7 +381,7 @@ def bandpass_filter(x, fs, lowcut, highcut, order=2):
     try:
         y = filtfilt(b, a, x)
     except Exception:
-        y = x - np.median(x)
+        y = x.copy()
     return y
 
 
@@ -412,14 +411,14 @@ def preprocess_signal(x, fs, bp_low=0.4, bp_high=6.0):
 
 def preprocess_emg_signal(x, fs=1000.0):
     """
-    EMG 预处理：去均值 → 鲁棒清理 → highpass(20Hz) → 指定窄带滤波 → 全波整流。
+    EMG 预处理：highpass(20Hz) → 指定窄带滤波 → 全波整流。
 
     返回 (bp_leak_ref, bp_clean, env)：
       - bp_leak_ref: highpass(20Hz) 后、bandstop/notch 前参考，用于 leak + mains 特征
       - bp_clean:    bandstop(49.8-50.2,149.8-150.2) + notch(50/100/200/300/400Hz,Q=100) 后信号
       - env:         基于 bp_clean 的全波整流包络
 
-    注: baseline drift (1-10Hz) 特征需要的原始去均值信号通过 preprocess_emg_signal_with_raw 获取。
+    注: baseline drift (1-10Hz) 特征需要的原始信号（无去均值/去毛刺）通过 preprocess_emg_signal_with_raw 获取。
     """
     bp_leak_ref, bp_clean, env, _ = preprocess_emg_signal_with_raw(x, fs)
     return bp_leak_ref, bp_clean, env
@@ -475,44 +474,25 @@ def _iir_notch_filter(x, fs, f0, q=100.0):
         return x
 
 
-def _emg_robust_clean(x):
-    """EMG 鲁棒清理：3 点中值（消除孤立尖峰）+ MAD 钳位（电极 pop 截断）。
-
-    输入应为已去均值的 EMG。输出同长度。
-    """
-    if len(x) < 5:
-        return x
-    try:
-        x = medfilt(x, kernel_size=3)
-    except Exception:
-        pass
-    mad = float(np.median(np.abs(x - np.median(x))))
-    if mad > EPS:
-        clip = _EMG_MAD_CLIP_K * mad
-        np.clip(x, -clip, clip, out=x)
-    return x
-
-
 def preprocess_emg_signal_with_raw(x, fs=1000.0):
-    """同 preprocess_emg_signal，但额外返回去均值（无带通）的原始信号，用于 baseline drift。
+    """同 preprocess_emg_signal，但额外返回原始信号（无去均值/去毛刺），用于 baseline drift。
 
-    流水线：demean → [鲁棒清理: medfilt(3) + MAD 钳位] → highpass(20Hz)
+    流水线：highpass(20Hz)
             → 保存 bp_leak_ref (bandstop/notch 前参考，含 50Hz 和 PPG 串扰)
             → bandstop(49.8-50.2,149.8-150.2)
             → notch(50/100/200/300/400Hz,Q=100) → 包络。
 
-    返回 (bp_leak_ref, bp_clean, env, x_demean)：
+    返回 (bp_leak_ref, bp_clean, env, x_raw_ref)：
       - bp_leak_ref:  highpass(20Hz) 后、bandstop/notch 前参考，用于 leak + mains 特征
       - bp_clean:     指定窄带滤波后的信号，用于 MNF/MDF/PKF 等
       - env:          abs(bp_clean)
-      - x_demean:     仅去均值（未做鲁棒清理），用于 baseline drift (1-10Hz)
+      - x_raw_ref:    原始信号（仅 copy，无去均值/去毛刺），用于 baseline drift (1-10Hz)
     """
     x = np.asarray(x, dtype=np.float64).copy()
-    x_demean = x - np.mean(x)
+    x_raw_ref = x.copy()
 
-    # 鲁棒清理后再高通，避免尖峰被 filtfilt 抹成长尾
-    x_clean = _emg_robust_clean(x_demean.copy())
-    bp = highpass_filter(x_clean, fs, cutoff=20.0, order=2)
+    # 直接高通滤波（无去均值/去毛刺），保留原始信号供 baseline drift 特征使用
+    bp = highpass_filter(x_raw_ref, fs, cutoff=20.0, order=2)
 
     # 保存 bandstop/notch 前参考信号：含全部窄带能量，用于 leak 特征和 mains 特征
     bp_leak_ref = bp.copy()
@@ -526,7 +506,7 @@ def preprocess_emg_signal_with_raw(x, fs=1000.0):
     bp_clean = bp
 
     env = np.abs(bp_clean)
-    return bp_leak_ref, bp_clean, env, x_demean
+    return bp_leak_ref, bp_clean, env, x_raw_ref
 
 
 # =========================================================
@@ -1200,11 +1180,11 @@ def extract_emg_leakage_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
     return feat
 
 
-def extract_emg_baseline_drift(x_demean, bp_leak_ref, fs=1000.0, prefix="EMG0"):
-    """EMG 接触噪声底：基于原始去均值信号的低频 1-10Hz baseline drift。
+def extract_emg_baseline_drift(x_raw_ref, bp_leak_ref, fs=1000.0, prefix="EMG0"):
+    """EMG 接触噪声底：基于未去均值/未去毛刺原始信号的低频 1-10Hz baseline drift。
 
     入参:
-      x_demean:    去均值但未做高通/陷波的原始 EMG（来自 preprocess_emg_signal_with_raw）
+      x_raw_ref:   未去均值/未去毛刺的原始 EMG（来自 preprocess_emg_signal_with_raw）
       bp_leak_ref: highpass(20Hz) 后、bandstop/notch 前参考信号，用于 HF 参考能量
 
     返回:
@@ -1212,7 +1192,7 @@ def extract_emg_baseline_drift(x_demean, bp_leak_ref, fs=1000.0, prefix="EMG0"):
       {prefix}_DRIFT_HF_RATIO:     P(1-10) / P(20-450) — 真接触时偏高（皮肤位移驱动）
     """
     feat = OrderedDict()
-    x = np.asarray(x_demean, dtype=np.float64)
+    x = np.asarray(x_raw_ref, dtype=np.float64)
     if len(x) < 16:
         feat[f"{prefix}_BASELINE_DRIFT_POW"] = 0.0
         feat[f"{prefix}_DRIFT_HF_RATIO"] = 0.0
@@ -1413,12 +1393,12 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
     if emg.ndim == 1:
         emg = emg.reshape(-1, 1)
 
-    # 5 值返回: (bp_leak_ref, bp_clean, env, x_demean)
-    ch0_leak, ch0_bp, ch0_env, ch0_demean = preprocess_emg_signal_with_raw(emg[:, 0], fs)
+    # 4 值返回: (bp_leak_ref, bp_clean, env, x_raw_ref)
+    ch0_leak, ch0_bp, ch0_env, ch0_raw_ref = preprocess_emg_signal_with_raw(emg[:, 0], fs)
     ch0_env_for_cross = ch0_env  # 缓存，避免调用方重复预处理
-    ch1_leak = ch1_bp = ch1_env = ch1_demean = None
+    ch1_leak = ch1_bp = ch1_env = ch1_raw_ref = None
     if emg.shape[1] >= 2:
-        ch1_leak, ch1_bp, ch1_env, ch1_demean = preprocess_emg_signal_with_raw(emg[:, 1], fs)
+        ch1_leak, ch1_bp, ch1_env, ch1_raw_ref = preprocess_emg_signal_with_raw(emg[:, 1], fs)
 
     # SampEn: 提前降采样到 250Hz，避免函数内部重复计算 gcd+resample
     emg0_ds = _emg_downsample_for_sampen(ch0_bp, fs)
@@ -1427,7 +1407,7 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
     feat.update(extract_emg_frequency_features(ch0_bp, fs, "EMG0"))
     feat.update(extract_emg_mains_features(ch0_leak, fs, "EMG0"))
     feat.update(extract_emg_leakage_features(ch0_leak, fs, "EMG0"))
-    feat.update(extract_emg_baseline_drift(ch0_demean, ch0_leak, fs, "EMG0"))
+    feat.update(extract_emg_baseline_drift(ch0_raw_ref, ch0_leak, fs, "EMG0"))
     feat.update(extract_emg_subwindow_features(ch0_bp, ch0_env, fs, "EMG0"))
     feat.update(extract_emg_spectral_shape_features(ch0_bp, fs, "EMG0"))
     feat["EMG0_SampEn"] = _emg_sample_entropy(emg0_ds) if emg0_ds is not None else 0.0
@@ -1438,7 +1418,7 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
         feat.update(extract_emg_frequency_features(ch1_bp, fs, "EMG1"))
         feat.update(extract_emg_mains_features(ch1_leak, fs, "EMG1"))
         feat.update(extract_emg_leakage_features(ch1_leak, fs, "EMG1"))
-        feat.update(extract_emg_baseline_drift(ch1_demean, ch1_leak, fs, "EMG1"))
+        feat.update(extract_emg_baseline_drift(ch1_raw_ref, ch1_leak, fs, "EMG1"))
         feat.update(extract_emg_subwindow_features(ch1_bp, ch1_env, fs, "EMG1"))
         feat.update(extract_emg_spectral_shape_features(ch1_bp, fs, "EMG1"))
         feat["EMG1_SampEn"] = _emg_sample_entropy(emg1_ds) if emg1_ds is not None else 0.0

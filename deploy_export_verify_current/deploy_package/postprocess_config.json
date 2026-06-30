@@ -1,0 +1,61 @@
+{
+  "pipeline_step": 4,
+  "description": "时序后处理 — 对窗口概率应用带滞回的状态机平滑",
+  "state_machine": {
+    "algorithm": "EMA + hysteresis",
+    "state": "0=not_worn, 1=worn",
+    "parameters": {
+      "alpha": 0.6,
+      "median_k": 1,
+      "T_on": 0.55,
+      "T_off": 0.2,
+      "K_on": 1,
+      "K_off": 1,
+      "cooldown_sec": 0.0,
+      "threshold_offset": 0.0,
+      "threshold_transform": "disabled"
+    }
+  },
+  "quality_scoring": {
+    "description": "基于特征质量调整 EMA 平滑速度",
+    "thresholds_source": "train — learned from bundle['quality_thresholds']",
+    "features_used": [
+      "PPG_mean",
+      "PPG_std"
+    ],
+    "thresholds": {
+      "PPG_mean": {
+        "type": "low",
+        "thr": 2075328.3171632914
+      },
+      "PPG_std": {
+        "type": "high",
+        "thr": 81632.35590350987
+      },
+      "_meta": {
+        "learned_from": "train_only",
+        "q_high": 0.99,
+        "q_low": 0.01
+      }
+    }
+  },
+  "ood_monitoring": {
+    "description": "OOD 窗比例监控 — 窗特征超出 train 分位 [q_low, q_high] 的比例",
+    "alert_rate": 0.3,
+    "quantiles": {
+      "EMG_consensus_PKF_range": {
+        "q_low": 1.953125,
+        "q_high": 70.99609374999996
+      },
+      "EMG_consensus_ZC_max": {
+        "q_low": 0.2706333333333333,
+        "q_high": 0.29075
+      },
+      "_meta": {
+        "learned_from": "train_only",
+        "q_low": 0.05,
+        "q_high": 0.95
+      }
+    }
+  }
+}

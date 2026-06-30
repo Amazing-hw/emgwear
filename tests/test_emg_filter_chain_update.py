@@ -13,15 +13,18 @@ def test_emg_filter_chain_suppresses_400hz_in_clean_features():
         extract_emg_frequency_features,
         preprocess_emg_signal_with_raw,
     )
+    from scipy.signal import welch
 
     emg = _tone(hz=400.0, amp=80.0)
-    bp_leak_ref, bp_clean, env, x_demean = preprocess_emg_signal_with_raw(emg)
+    bp_leak_ref, bp_clean, env, x_raw_ref = preprocess_emg_signal_with_raw(emg)
 
-    feat_ref = extract_emg_frequency_features(bp_leak_ref, fs=1000.0, prefix="EMG")
-    feat_clean = extract_emg_frequency_features(bp_clean, fs=1000.0, prefix="EMG")
+    # 验证 400Hz 被 notch 抑制：clean 信号的 395-405Hz 频段能量应显著低于 ref
+    f_ref, p_ref = welch(bp_leak_ref, fs=1000.0, nperseg=512, noverlap=256)
+    f_clean, p_clean = welch(bp_clean, fs=1000.0, nperseg=512, noverlap=256)
+    ref_band = float(np.sum(p_ref[(f_ref >= 395.0) & (f_ref <= 405.0)]))
+    clean_band = float(np.sum(p_clean[(f_clean >= 395.0) & (f_clean <= 405.0)]))
 
-    assert abs(feat_ref["EMG_PKF"] - 400.0) < 10.0
-    assert abs(feat_clean["EMG_PKF"] - 400.0) > 20.0
+    assert clean_band < ref_band * 0.1
 
 
 def test_mains_features_include_40_60hz_ratio_for_drifted_mains():

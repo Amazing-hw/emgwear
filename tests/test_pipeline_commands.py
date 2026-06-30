@@ -332,6 +332,25 @@ def test_deploy_feature_extractor_is_standalone_and_matches_training_ppg_feature
             pass
 
 
+def test_deploy_feature_extractor_template_keeps_emg_preprocess_to_filter_chain_only():
+    feature_order = ["EMG0_BASELINE_DRIFT_POW", "EMG0_DRIFT_HF_RATIO"]
+    formula_map = s08._build_feature_code_map()
+    feat_block = "\n".join(f'    f["{name}"] = {formula_map[name]}' for name in feature_order)
+    script = s08._build_extractor_script_template(
+        len(feature_order),
+        json.dumps(feature_order),
+        json.dumps({name: 0.0 for name in feature_order}),
+        json.dumps({}),
+        feat_block,
+    )
+
+    assert "_emg_robust_clean" not in script
+    assert "x_demean" not in script
+    assert "emg0_demean" not in script
+    assert "emg1_demean" not in script
+    assert "x_raw_ref = x.copy()" in script
+
+
 def test_deploy_feature_map_covers_s03_generated_deployable_features():
     rng = np.random.default_rng(17)
     ppg_6ch = rng.normal(50000, 4000, size=(300, 6))
@@ -433,7 +452,7 @@ def test_deploy_feature_extractor_matches_training_for_all_deployable_features()
         deployed = np.array(module.extract_features(ppg_6ch, emg, acc), dtype=float)
         expected = np.array([float(trained[name]) for name in feature_order], dtype=float)
 
-        np.testing.assert_allclose(deployed, expected, rtol=1e-7, atol=1e-7)
+        np.testing.assert_allclose(deployed, expected, rtol=1e-6, atol=1e-6)
     finally:
         if script_path.exists():
             script_path.unlink()

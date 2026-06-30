@@ -1,0 +1,35 @@
+{
+  "pipeline_step": 1,
+  "description": "Stage1 IR/PPG DC/ACDC gate: six-channel mean @100Hz, no downsampling",
+  "input": "PPG data, 6 channels @100Hz",
+  "preprocessing": [
+    "ppg_mean = mean(ppg_ch0..ppg_ch5)",
+    "keep 100Hz samples"
+  ],
+  "window": {
+    "duration_sec": 3.0,
+    "points_100hz": 300,
+    "stride_sec": 1.0
+  },
+  "features_per_window": {
+    "DC": {
+      "formula": "min(neighbor_mean), neighbor_mean[i]=(x[i]+x[i+1])/2",
+      "purpose": "minimum adjacent-sample mean"
+    },
+    "AC": {
+      "formula": "median(abs(diff(x)))",
+      "purpose": "median adjacent-sample variation"
+    },
+    "AC_DC_RATIO": {
+      "formula": "AC / (abs(DC) + eps)",
+      "purpose": "normalized AC variation"
+    }
+  },
+  "window_pass_rule": "DC > dc_threshold AND AC_DC_RATIO < ac_dc_threshold",
+  "sample_pass_rule": "any 3s Stage1 window passes -> sample enters Stage2",
+  "thresholds": {
+    "dc_threshold": 2200000.0,
+    "ac_dc_threshold": 0.35
+  },
+  "search_source": "fixed_engineering_threshold"
+}

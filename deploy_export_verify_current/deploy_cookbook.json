@@ -1,0 +1,164 @@
+{
+  "_title": "手表佩戴活体检测 (PPG+EMG+ACC) — 部署配方",
+  "_for": "嵌入式/工程化部署工程师。本文件自包含。",
+  "_input": "3s@100Hz PPG窗口 (300 samples) + EMG窗口 (3000 samples x 2) + ACC窗口 (300 samples x 3)",
+  "A_preprocessing_ppg": {
+    "_note": "对单通道 PPG 执行管线: remove_burr → remove_step → medfilt(50ms) → movavg(30ms) → BP(0.4-6Hz, order=4)"
+  },
+  "A_preprocessing_emg": {
+    "_note": "对 EMG 执行: highpass(20Hz) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → envelope; 无去均值/去毛刺；工频/串扰占比由陷波前参考信号显式建模"
+  },
+  "B_selected_features": {
+    "_note": "共 2 个特征",
+    "feature_order": [
+      "EMG_consensus_PKF_range",
+      "EMG_consensus_ZC_max"
+    ],
+    "formulas": {
+      "EMG_consensus_PKF_range": "max([EMG0_PKF, EMG1_PKF] (peak frequency in 20-450Hz band)) - min([EMG0_PKF, EMG1_PKF] (peak frequency in 20-450Hz band))",
+      "EMG_consensus_ZC_max": "max([EMG0_ZC, EMG1_ZC] (zero-crossing rate of emg_bp))"
+    }
+  },
+  "C_xgboost_inference": {
+    "fill_values": {
+      "EMG_consensus_PKF_range": 22.4609375,
+      "EMG_consensus_ZC_max": 0.2803333333333333
+    },
+    "clip_bounds": {
+      "EMG_consensus_PKF_range": [
+        -39.0625,
+        85.9375
+      ],
+      "EMG_consensus_ZC_max": [
+        0.26579166666666676,
+        0.29812499999999986
+      ]
+    },
+    "preprocess_order": [
+      "select feature_order",
+      "fill NaN/inf with fill_values",
+      "clip by clip_bounds"
+    ],
+    "fill_rule": "feature_vec[i] 为 NaN/inf 时用 fill_values[feature_name] 替换",
+    "clip_rule": "fill 后对每个入选特征执行 clip(lower, upper)，边界来自训练集",
+    "model_threshold": 0.05,
+    "n_estimators": 10,
+    "model_json": {
+      "learner": {
+        "generic_param": {
+          "device": "cpu",
+          "fail_on_invalid_gpu_id": "0",
+          "n_jobs": "1",
+          "nthread": "1",
+          "random_state": "42",
+          "seed": "42",
+          "seed_per_iteration": "0",
+          "validate_parameters": "1"
+        },
+        "gradient_booster": {
+          "gbtree_model_param": {
+            "num_parallel_tree": "1",
+            "num_trees": "10"
+          },
+          "gbtree_train_param": {
+            "process_type": "default",
+            "tree_method": "auto",
+            "updater": "grow_quantile_histmaker",
+            "updater_seq": "grow_quantile_histmaker"
+          },
+          "name": "gbtree",
+          "specified_updater": false,
+          "tree_train_param": {
+            "alpha": "0",
+            "colsample_bylevel": "1",
+            "colsample_bynode": "1",
+            "colsample_bytree": "1",
+            "eta": "0.100000001",
+            "gamma": "0",
+            "grow_policy": "depthwise",
+            "interaction_constraints": "",
+            "lambda": "1",
+            "learning_rate": "0.100000001",
+            "max_bin": "256",
+            "max_cat_threshold": "64",
+            "max_cat_to_onehot": "4",
+            "max_delta_step": "0",
+            "max_depth": "2",
+            "max_leaves": "0",
+            "min_child_weight": "1",
+            "min_split_loss": "0",
+            "monotone_constraints": "()",
+            "refresh_leaf": "1",
+            "reg_alpha": "0",
+            "reg_lambda": "1",
+            "sampling_method": "uniform",
+            "sparse_threshold": "0.20000000000000001",
+            "subsample": "1"
+          },
+          "updater": [
+            {
+              "hist_train_param": {
+                "debug_synchronize": "0",
+                "max_cached_hist_node": "18446744073709551615"
+              },
+              "name": "grow_quantile_histmaker"
+            }
+          ]
+        },
+        "learner_model_param": {
+          "base_score": "[5E-1]",
+          "boost_from_average": "1",
+          "num_class": "0",
+          "num_feature": "2",
+          "num_target": "1"
+        },
+        "learner_train_param": {
+          "booster": "gbtree",
+          "disable_default_eval_metric": "0",
+          "multi_strategy": "one_output_per_tree",
+          "objective": "binary:logistic"
+        },
+        "metrics": [
+          {
+            "name": "logloss"
+          }
+        ],
+        "objective": {
+          "name": "binary:logistic",
+          "reg_loss_param": {
+            "scale_pos_weight": "1"
+          }
+        }
+      },
+      "version": [
+        3,
+        2,
+        0
+      ]
+    }
+  },
+  "D_stage1_gate": {
+    "input": "6-ch PPG @ 100Hz -> channel mean, no downsampling",
+    "window": "3s window / 1s stride (300 points @100Hz)",
+    "rule": "dc > dc_thresh AND ac/|dc| < acdc_thresh",
+    "sample_rule": "any(window_pass) → 进入 Stage2",
+    "thresholds": {
+      "dc_threshold": 2200000.0,
+      "ac_dc_threshold": 0.35
+    }
+  },
+  "D_stage3_postprocess": {
+    "algorithm": "EMA + hysteresis + cooldown",
+    "params": {
+      "alpha": 0.6,
+      "T_on": 0.55,
+      "T_off": 0.2,
+      "K_on": 1,
+      "K_off": 1,
+      "cooldown_sec": 0.0,
+      "median_k": 1,
+      "threshold_offset": 0.0,
+      "threshold_transform": "disabled"
+    }
+  }
+}

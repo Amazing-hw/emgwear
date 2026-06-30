@@ -1,0 +1,124 @@
+{
+  "feature_names": [
+    "EMG_consensus_PKF_range",
+    "EMG_consensus_ZC_max"
+  ],
+  "feature_order": [
+    "EMG_consensus_PKF_range",
+    "EMG_consensus_ZC_max"
+  ],
+  "fill_values": {
+    "EMG_consensus_PKF_range": 22.4609375,
+    "EMG_consensus_ZC_max": 0.2803333333333333
+  },
+  "clip_bounds": {
+    "EMG_consensus_PKF_range": [
+      -39.0625,
+      85.9375
+    ],
+    "EMG_consensus_ZC_max": [
+      0.26579166666666676,
+      0.29812499999999986
+    ]
+  },
+  "preprocess_order": [
+    "select feature_order",
+    "fill NaN/inf with fill_values",
+    "clip by clip_bounds"
+  ],
+  "n_estimators": 10,
+  "threshold": 0.05,
+  "model": {
+    "learner": {
+      "generic_param": {
+        "device": "cpu",
+        "fail_on_invalid_gpu_id": "0",
+        "n_jobs": "1",
+        "nthread": "1",
+        "random_state": "42",
+        "seed": "42",
+        "seed_per_iteration": "0",
+        "validate_parameters": "1"
+      },
+      "gradient_booster": {
+        "gbtree_model_param": {
+          "num_parallel_tree": "1",
+          "num_trees": "10"
+        },
+        "gbtree_train_param": {
+          "process_type": "default",
+          "tree_method": "auto",
+          "updater": "grow_quantile_histmaker",
+          "updater_seq": "grow_quantile_histmaker"
+        },
+        "name": "gbtree",
+        "specified_updater": false,
+        "tree_train_param": {
+          "alpha": "0",
+          "colsample_bylevel": "1",
+          "colsample_bynode": "1",
+          "colsample_bytree": "1",
+          "eta": "0.100000001",
+          "gamma": "0",
+          "grow_policy": "depthwise",
+          "interaction_constraints": "",
+          "lambda": "1",
+          "learning_rate": "0.100000001",
+          "max_bin": "256",
+          "max_cat_threshold": "64",
+          "max_cat_to_onehot": "4",
+          "max_delta_step": "0",
+          "max_depth": "2",
+          "max_leaves": "0",
+          "min_child_weight": "1",
+          "min_split_loss": "0",
+          "monotone_constraints": "()",
+          "refresh_leaf": "1",
+          "reg_alpha": "0",
+          "reg_lambda": "1",
+          "sampling_method": "uniform",
+          "sparse_threshold": "0.20000000000000001",
+          "subsample": "1"
+        },
+        "updater": [
+          {
+            "hist_train_param": {
+              "debug_synchronize": "0",
+              "max_cached_hist_node": "18446744073709551615"
+            },
+            "name": "grow_quantile_histmaker"
+          }
+        ]
+      },
+      "learner_model_param": {
+        "base_score": "[5E-1]",
+        "boost_from_average": "1",
+        "num_class": "0",
+        "num_feature": "2",
+        "num_target": "1"
+      },
+      "learner_train_param": {
+        "booster": "gbtree",
+        "disable_default_eval_metric": "0",
+        "multi_strategy": "one_output_per_tree",
+        "objective": "binary:logistic"
+      },
+      "metrics": [
+        {
+          "name": "logloss"
+        }
+      ],
+      "objective": {
+        "name": "binary:logistic",
+        "reg_loss_param": {
+          "scale_pos_weight": "1"
+        }
+      }
+    },
+    "version": [
+      3,
+      2,
+      0
+    ]
+  }
+}

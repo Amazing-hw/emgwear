@@ -14,7 +14,7 @@ def test_leak_ratio_detects_100hz_crosstalk():
     from s03_extract_feature_pool import extract_emg_leakage_features, preprocess_emg_signal_with_raw
 
     emg = _synthetic_emg_with_tone(tone_hz=100.0, tone_amp=50.0)
-    bp_leak_ref, bp_clean, env, x_demean = preprocess_emg_signal_with_raw(emg)
+    bp_leak_ref, bp_clean, env, x_raw_ref = preprocess_emg_signal_with_raw(emg)
     feat = extract_emg_leakage_features(bp_leak_ref, fs=1000.0, prefix="EMG0")
 
     assert feat["EMG0_LEAK_100_RATIO"] > 0.1
@@ -25,7 +25,7 @@ def test_leak_ratio_low_for_clean_signal():
 
     rng = np.random.default_rng(99)
     emg = rng.normal(0, 1, size=3000)
-    bp_leak_ref, bp_clean, env, x_demean = preprocess_emg_signal_with_raw(emg)
+    bp_leak_ref, bp_clean, env, x_raw_ref = preprocess_emg_signal_with_raw(emg)
     feat = extract_emg_leakage_features(bp_leak_ref, fs=1000.0, prefix="EMG0")
 
     assert feat["EMG0_LEAK_100_RATIO"] < 0.3
@@ -40,7 +40,7 @@ def test_filter_chain_suppresses_150hz_peak():
     from scipy.signal import welch
 
     emg = _synthetic_emg_with_tone(tone_hz=150.0, tone_amp=50.0)
-    bp_leak_ref, bp_clean, env, x_demean = preprocess_emg_signal_with_raw(emg)
+    bp_leak_ref, bp_clean, env, x_raw_ref = preprocess_emg_signal_with_raw(emg)
 
     f_ref, p_ref = welch(bp_leak_ref, fs=1000.0, nperseg=512, noverlap=256)
     f_clean, p_clean = welch(bp_clean, fs=1000.0, nperseg=512, noverlap=256)
@@ -54,7 +54,7 @@ def test_50hz_filter_chain_covers_drifted_mains():
     from s03_extract_feature_pool import preprocess_emg_signal_with_raw
 
     emg = _synthetic_emg_with_tone(tone_hz=49.5, tone_amp=30.0)
-    bp_leak_ref, bp_clean, env, x_demean = preprocess_emg_signal_with_raw(emg)
+    bp_leak_ref, bp_clean, env, x_raw_ref = preprocess_emg_signal_with_raw(emg)
 
     assert float(np.std(bp_clean)) < float(np.std(bp_leak_ref)) * 0.9
 
@@ -106,20 +106,22 @@ def test_emg_single_channel_leak_features():
     assert feat["EMG1_LEAK_SUM_RATIO"] == 0.0
 
 
-def test_preprocess_returns_four_values():
+def test_preprocess_returns_raw_reference_without_demean_or_despike():
     from s03_extract_feature_pool import preprocess_emg_signal_with_raw
 
     rng = np.random.default_rng(3)
-    emg = rng.normal(0, 1, size=3000)
+    emg = rng.normal(5.0, 1, size=3000)
+    emg[123] = 1000.0
     result = preprocess_emg_signal_with_raw(emg)
 
     assert len(result) == 4
-    bp_leak_ref, bp_clean, env, x_demean = result
+    bp_leak_ref, bp_clean, env, x_raw_ref = result
     assert bp_leak_ref is not None
     assert bp_clean is not None
     assert env is not None
-    assert x_demean is not None
+    assert x_raw_ref is not None
     assert len(bp_leak_ref) == len(bp_clean) == len(emg)
+    np.testing.assert_allclose(x_raw_ref, emg, rtol=0.0, atol=0.0)
 
 
 def test_leak_features_names_consistent():

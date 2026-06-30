@@ -523,10 +523,10 @@ def _build_feature_code_map():
         "EMG1_50HZ_HARM_RATIO": "((_band_power(emg1_leak_ref, 49.5, 50.5, fs_emg)+_band_power(emg1_leak_ref, 149.5, 150.5, fs_emg)+_band_power(emg1_leak_ref, 249.5, 250.5, fs_emg)) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
         "EMG1_40_60HZ_RATIO": "(_band_power(emg1_leak_ref, 40, 60, fs_emg) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
         # EMG baseline drift
-        "EMG0_BASELINE_DRIFT_POW": "float(np.log1p(float(np.mean(_bandpass(emg0_demean, fs_emg, 1.0, 10.0, order=2)**2)))) if emg0_demean is not None else 0.0",
-        "EMG0_DRIFT_HF_RATIO": "(float(np.mean(_bandpass(emg0_demean, fs_emg, 1.0, 10.0, order=2)**2)) / (float(np.mean(emg0_leak_ref**2)) + EPS)) if emg0_demean is not None and emg0_leak_ref is not None else 0.0",
-        "EMG1_BASELINE_DRIFT_POW": "float(np.log1p(float(np.mean(_bandpass(emg1_demean, fs_emg, 1.0, 10.0, order=2)**2)))) if emg1_demean is not None else 0.0",
-        "EMG1_DRIFT_HF_RATIO": "(float(np.mean(_bandpass(emg1_demean, fs_emg, 1.0, 10.0, order=2)**2)) / (float(np.mean(emg1_leak_ref**2)) + EPS)) if emg1_demean is not None and emg1_leak_ref is not None else 0.0",
+        "EMG0_BASELINE_DRIFT_POW": "float(np.log1p(float(np.mean(_bandpass(emg0_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)))) if emg0_raw_ref is not None else 0.0",
+        "EMG0_DRIFT_HF_RATIO": "(float(np.mean(_bandpass(emg0_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)) / (float(np.mean(emg0_leak_ref**2)) + EPS)) if emg0_raw_ref is not None and emg0_leak_ref is not None else 0.0",
+        "EMG1_BASELINE_DRIFT_POW": "float(np.log1p(float(np.mean(_bandpass(emg1_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)))) if emg1_raw_ref is not None else 0.0",
+        "EMG1_DRIFT_HF_RATIO": "(float(np.mean(_bandpass(emg1_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)) / (float(np.mean(emg1_leak_ref**2)) + EPS)) if emg1_raw_ref is not None and emg1_leak_ref is not None else 0.0",
         # EMG narrowband leakage features (on bp_leak_ref, before any notch)
         "EMG0_LEAK_100_RATIO": "emg0_leak[0] if emg0_leak_ref is not None else 0.0",
         "EMG0_LEAK_150_RATIO": "emg0_leak[1] if emg0_leak_ref is not None else 0.0",
@@ -696,7 +696,7 @@ def _bandpass(x, fs=100, lowcut=0.4, highcut=6.0, order=4):
     try:
         return filtfilt(b, a, x)
     except Exception:
-        return x - np.median(x)
+        return x.copy()
 
 
 def _highpass(x, fs=1000, cutoff=20.0, order=2):
@@ -711,7 +711,7 @@ def _highpass(x, fs=1000, cutoff=20.0, order=2):
     try:
         return filtfilt(b, a, x)
     except Exception:
-        return x - np.median(x)
+        return x.copy()
 
 
 # ========== FFT / Autocorr / Entropy ==========
@@ -1047,19 +1047,6 @@ def _compute_leak_ratios(bp_ref, fs, leak_freqs, bw_hz=0.8):
     return tuple(ratios)
 
 
-def _emg_robust_clean(x, mad_k=10.0):
-    if x is None or len(x) < 5:
-        return x
-    try:
-        x = medfilt(x, kernel_size=3)
-    except Exception:
-        pass
-    mad = float(np.median(np.abs(x - np.median(x))))
-    if mad > EPS:
-        clip = mad_k * mad
-        np.clip(x, -clip, clip, out=x)
-    return x
-
 def _acc_robust_clean(acc, burr_k=6.0):
     if acc is None:
         return acc
@@ -1072,13 +1059,12 @@ def _acc_robust_clean(acc, burr_k=6.0):
     return out
 
 def _preprocess_emg(x, fs=1000):
-    """Returns (bp_leak_ref, bp_clean, env, x_demean)."""
+    """Returns (bp_leak_ref, bp_clean, env, x_raw_ref)."""
     if x is None or len(x) < 4:
         return None, None, None, None
     x = np.asarray(x, dtype=np.float64).copy()
-    x_demean = x - np.mean(x)
-    x_clean = _emg_robust_clean(x_demean.copy())
-    bp = _highpass(x_clean, fs, cutoff=20.0, order=2)
+    x_raw_ref = x.copy()
+    bp = _highpass(x_raw_ref, fs, cutoff=20.0, order=2)
     # 保存 bandstop/notch 前参考信号
     bp_leak_ref = bp.copy()
     for lo, hi in ((49.8, 50.2), (149.8, 150.2)):
@@ -1088,7 +1074,7 @@ def _preprocess_emg(x, fs=1000):
         bp = _iir_notch_filter(bp, fs, f0, q=100.0)
     bp_clean = bp
     env = np.abs(bp_clean)
-    return bp_leak_ref, bp_clean, env, x_demean
+    return bp_leak_ref, bp_clean, env, x_raw_ref
 
 
 def _band_power(x, low, high, fs):
@@ -1294,11 +1280,11 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         emg = np.asarray(emg, dtype=np.float64)
         if emg.ndim == 1:
             emg = emg.reshape(-1, 1)
-        emg0_leak_ref, emg0_bp, emg0_env, emg0_demean = _preprocess_emg(emg[:, 0], fs_emg)
+        emg0_leak_ref, emg0_bp, emg0_env, emg0_raw_ref = _preprocess_emg(emg[:, 0], fs_emg)
         if emg.shape[1] >= 2:
-            emg1_leak_ref, emg1_bp, emg1_env, emg1_demean = _preprocess_emg(emg[:, 1], fs_emg)
+            emg1_leak_ref, emg1_bp, emg1_env, emg1_raw_ref = _preprocess_emg(emg[:, 1], fs_emg)
         else:
-            emg1_leak_ref = emg1_bp = emg1_env = emg1_demean = None
+            emg1_leak_ref = emg1_bp = emg1_env = emg1_raw_ref = None
         # leak ratio array per channel
         emg0_leak = _compute_leak_ratios(emg0_leak_ref, fs_emg, EMG_LEAK_FREQS) if emg0_leak_ref is not None else (0,)*5
         emg1_leak = _compute_leak_ratios(emg1_leak_ref, fs_emg, EMG_LEAK_FREQS) if emg1_leak_ref is not None else (0,)*5
@@ -1316,8 +1302,8 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         else:
             emg0_env_ds = emg0_env_smooth_ds = None
     else:
-        emg0_leak_ref = emg0_bp = emg0_env = emg0_demean = None
-        emg1_leak_ref = emg1_bp = emg1_env = emg1_demean = None
+        emg0_leak_ref = emg0_bp = emg0_env = emg0_raw_ref = None
+        emg1_leak_ref = emg1_bp = emg1_env = emg1_raw_ref = None
         emg0_leak = emg1_leak = (0,) * 5
         emg0_freq = emg1_freq = (0,) * 21
         emg0_subwin = emg1_subwin = (0.0, 0.0, 0.0)
@@ -1483,7 +1469,7 @@ def export_deploy_cookbook(artifact_dir):
             "_note": "对单通道 PPG 执行管线: remove_burr → remove_step → medfilt(50ms) → movavg(30ms) → BP(0.4-6Hz, order=4)",
         },
         "A_preprocessing_emg": {
-            "_note": "对 EMG 执行: demean → robust_clean(medfilt3+MAD_clip) → highpass(20Hz) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → envelope; 工频/串扰占比由陷波前参考信号显式建模",
+            "_note": "对 EMG 执行: highpass(20Hz) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → envelope; 无去均值/去毛刺；工频/串扰占比由陷波前参考信号显式建模",
         },
         "B_selected_features": {
             "_note": f"共 {len(selected)} 个特征",

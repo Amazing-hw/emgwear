@@ -1,0 +1,29 @@
+{
+  "pipeline_step": 2,
+  "description": "Stage2 — 3s 滑动窗口特征提取 (单通道 PPG + EMG + ACC) + XGBoost",
+  "window_config": {
+    "duration_sec": 3.0,
+    "stride_sec": 1.0,
+    "fs_ppg": 100.0,
+    "fs_emg": 1000.0,
+    "fs_acc": 100.0
+  },
+  "preprocessing": {
+    "ppg": "remove_burr → remove_step → medfilt(50ms) → movavg(30ms) → BP(0.4-6Hz, order=4)",
+    "emg": "highpass(20Hz, order=2) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → abs(envelope); leak_ref is captured before bandstop/notch",
+    "acc": "magnitude → demean → BP(0.5-5Hz, order=2)"
+  },
+  "n_selected_features": 2,
+  "features": {
+    "EMG_consensus_PKF_range": {
+      "feature": "EMG_consensus_PKF_range",
+      "formula": "max([EMG0_PKF, EMG1_PKF] (peak frequency in 20-450Hz band)) - min([EMG0_PKF, EMG1_PKF] (peak frequency in 20-450Hz band))",
+      "category": "emg_cross"
+    },
+    "EMG_consensus_ZC_max": {
+      "feature": "EMG_consensus_ZC_max",
+      "formula": "max([EMG0_ZC, EMG1_ZC] (zero-crossing rate of emg_bp))",
+      "category": "emg_cross"
+    }
+  }
+}
