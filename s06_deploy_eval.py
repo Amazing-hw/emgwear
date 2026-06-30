@@ -1261,8 +1261,8 @@ def build_feature_formula_map(selected_features):
     ])
 
     # ---- EMG features ----
-    # 注: emg_bp_clean 指 bp_clean（统一 notch 后，用于常规时频特征 MNF/MDF/PKF 等）
-    #     emg_bp_leak_ref 指 bp_leak_ref（20-450Hz 带通后 notch 前，含窄带能量，用于 mains + leak 特征）
+    # 注: emg_bp_clean 指指定窄带滤波后的 bp_clean，用于常规时频特征 MNF/MDF/PKF 等
+    #     emg_bp_leak_ref 指 highpass(20Hz) 后、bandstop/notch 前参考，含窄带能量，用于 mains + leak 特征
     #     emg_demean 指仅去均值未做带通的原始信号，用于 baseline drift
     EMG_TEMPLATES = OrderedDict([
         ("{ch}_MAV",   "mean(|emg_env|)"),
@@ -1284,19 +1284,39 @@ def build_feature_formula_map(selected_features):
         ("{ch}_POW_150_450", "power fraction 150-450Hz / total 20-450Hz"),
         ("{ch}_POW_LH_RATIO","low/high power ratio (20-60Hz)/(150-450Hz)"),
         ("{ch}_SE95",  "frequency at 95% cumulative power — spectral concentration"),
+        ("{ch}_POW_20_40",   "power fraction 20-40Hz / total 20-450Hz"),
+        ("{ch}_POW_40_60",   "power fraction 40-60Hz / total 20-450Hz"),
+        ("{ch}_POW_60_90",   "power fraction 60-90Hz / total 20-450Hz"),
+        ("{ch}_POW_90_120",  "power fraction 90-120Hz / total 20-450Hz"),
+        ("{ch}_POW_120_180", "power fraction 120-180Hz / total 20-450Hz"),
+        ("{ch}_POW_180_250", "power fraction 180-250Hz / total 20-450Hz"),
+        ("{ch}_POW_250_350", "power fraction 250-350Hz / total 20-450Hz"),
+        ("{ch}_POW_350_450", "power fraction 350-450Hz / total 20-450Hz"),
+        ("{ch}_RATIO_60_150_TO_20_60", "power(60-150Hz) / power(20-60Hz)"),
+        ("{ch}_RATIO_60_180_TO_250_450", "power(60-180Hz) / power(250-450Hz)"),
+        ("{ch}_RATIO_20_90_TO_180_450", "power(20-90Hz) / power(180-450Hz)"),
+        ("{ch}_RATIO_40_120_TO_120_350", "power(40-120Hz) / power(120-350Hz)"),
+        ("{ch}_RMS_SUBWIN_CV", "std([RMS(each 1s subwindow)]) / mean([RMS(each 1s subwindow)])"),
+        ("{ch}_MDF_SUBWIN_IQR", "IQR([MDF(each 1s subwindow)])"),
+        ("{ch}_WL_SUBWIN_CV", "std([waveform_length(each 1s subwindow)]) / mean([waveform_length(each 1s subwindow)])"),
+        ("{ch}_SPEC_ENTROPY", "normalized spectral entropy of Welch PSD in 20-450Hz band"),
+        ("{ch}_SPEC_FLATNESS", "geometric_mean(PSD) / arithmetic_mean(PSD) in 20-450Hz band"),
+        ("{ch}_SPEC_CENTROID", "sum(freq * PSD) / sum(PSD) in 20-450Hz band"),
+        ("{ch}_SPEC_ROLLOFF_85", "frequency where cumulative Welch PSD reaches 85% of total 20-450Hz power"),
         ("{ch}_SampEn","Sample Entropy (m=2, r=0.2*std)"),
         ("{ch}_SKEWNESS","skewness of emg_bp amplitude distribution"),
         ("{ch}_KURTOSIS","kurtosis of emg_bp amplitude distribution"),
         ("{ch}_SNR",   "RMS / (MAV + 1e-12) — signal-to-noise proxy"),
-        # 50Hz 工频拾取（在 emg_bp_leak_ref 上算，20-450Hz 带通后 notch 前）
-        ("{ch}_PWR_50HZ",         "log1p(power(48-52Hz) of emg_bp_leak_ref)"),
-        ("{ch}_50HZ_RATIO",       "power(48-52Hz) / power(2-450Hz) on emg_bp_leak_ref"),
+        # 50Hz 工频拾取（在 emg_bp_leak_ref 上算，highpass 后、bandstop/notch 前）
+        ("{ch}_PWR_50HZ",         "log1p(power(49.5-50.5Hz) of emg_bp_leak_ref)"),
+        ("{ch}_50HZ_RATIO",       "power(49.5-50.5Hz) / power(2-450Hz) on emg_bp_leak_ref"),
+        ("{ch}_40_60HZ_RATIO",    "power(40-60Hz) / power(2-450Hz) on emg_bp_leak_ref"),
         # 谐波 ratio 包含 50/150/250Hz（150/250Hz 可能含 PPG 串扰，由 LEAK_* 特征分离）
-        ("{ch}_50HZ_HARM_RATIO",  "(P(48-52)+P(148-152)+P(248-252)) / P(2-450) on emg_bp_leak_ref"),
+        ("{ch}_50HZ_HARM_RATIO",  "(P(49.5-50.5)+P(149.5-150.5)+P(249.5-250.5)) / P(2-450) on emg_bp_leak_ref"),
         # Baseline drift（在 emg_demean 上算，1-10Hz 已被 emg_bp 砍掉）
         ("{ch}_BASELINE_DRIFT_POW","log1p(mean(bandpass(emg_demean, 1-10Hz, 2nd_order, fs=1000)²))"),
         ("{ch}_DRIFT_HF_RATIO",    "mean(lf²) / mean(emg_bp_leak_ref²) — 1-10Hz / 20-450Hz 能量比"),
-        # PPG 窄带串扰显式特征（在 emg_bp_leak_ref 上算，notch 前）
+        # PPG 窄带串扰显式特征（在 emg_bp_leak_ref 上算，bandstop/notch 前）
         ("{ch}_LEAK_100_RATIO", "power(99.2-100.8Hz) / power(20-450Hz) on emg_bp_leak_ref"),
         ("{ch}_LEAK_150_RATIO", "power(149.2-150.8Hz) / power(20-450Hz) on emg_bp_leak_ref"),
         ("{ch}_LEAK_200_RATIO", "power(199.2-200.8Hz) / power(20-450Hz) on emg_bp_leak_ref"),
@@ -1399,6 +1419,9 @@ def build_feature_formula_map(selected_features):
     # 补充 EMG 跨通道
     ALL_TEMPLATES["EMG_CROSS_CORR"] = "safe_corr(emg_ch0_bp, emg_ch1_bp)"
     ALL_TEMPLATES["EMG_RMS_RATIO"] = "EMG0_RMS / EMG1_RMS"
+    ALL_TEMPLATES["EMG_ENV_CORR"] = "safe_corr(EMG0 envelope, EMG1 envelope)"
+    ALL_TEMPLATES["EMG_MAV_RATIO"] = "EMG0_MAV / (EMG1_MAV + eps), clipped to [0,1000]"
+    ALL_TEMPLATES["EMG_CONTACT_IMBALANCE"] = "abs(EMG0_MAV - EMG1_MAV) / (EMG0_MAV + EMG1_MAV + eps)"
     emg_consensus_source = {
         "RMS": "sqrt(mean(emg_bp^2))",
         "MAV": "mean(abs(emg envelope))",
@@ -1638,7 +1661,7 @@ def export_deploy_artifacts(artifact_dir):
         }),
         ("preprocessing", {
             "ppg": "remove_burr → remove_step → medfilt(50ms) → movavg(30ms) → BP(0.4-6Hz, order=4)",
-            "emg": "demean → robust_clean → BP(20-450Hz, order=4) → unified_notch(50/100/150/200/250/300, ±0.8Hz) → abs(envelope) + leak_ref",
+            "emg": "demean → robust_clean → highpass(20Hz, order=2) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → abs(envelope); leak_ref is captured before bandstop/notch",
             "acc": "magnitude → demean → BP(0.5-5Hz, order=2)",
         }),
         ("n_selected_features", len(selected_features)),

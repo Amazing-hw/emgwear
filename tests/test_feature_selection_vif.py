@@ -117,10 +117,31 @@ def test_default_emg_group_limits_balance_frequency_cross_leakage_and_consensus(
 
     limits = s04.GROUP_LIMITS_DEFAULT
 
-    assert limits["emg_frequency"] == 4
+    assert limits["emg_frequency"] == 6
     assert limits["emg_cross"] == 2
     assert limits["emg_leakage"] == 4
     assert limits["emg_consensus"] == 2
+
+
+def test_emg_wide_mains_ratio_is_anti_spoof_feature():
+    import s04_feature_selection as s04
+
+    assert s04.feature_to_group("EMG0_40_60HZ_RATIO") == "anti_spoof"
+    assert s04.feature_to_group("EMG1_40_60HZ_RATIO") == "anti_spoof"
+
+
+def test_emg_fine_spectral_bands_are_frequency_group_features():
+    import s04_feature_selection as s04
+
+    for feature in [
+        "EMG0_POW_20_40",
+        "EMG0_POW_120_180",
+        "EMG1_POW_350_450",
+        "EMG1_RATIO_40_120_TO_120_350",
+    ]:
+        assert s04.feature_to_group(feature) == "emg_frequency"
+
+    assert s04.GROUP_LIMITS_DEFAULT["emg_frequency"] == 6
 
 
 def test_group_limit_zero_excludes_features_from_selection_and_ranked_candidates():

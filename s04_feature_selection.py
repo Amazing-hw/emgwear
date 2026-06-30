@@ -80,17 +80,25 @@ FEATURE_GROUPS = {
         "EMG1_P2P", "EMG1_AMP_CV",
         "EMG1_RMS_SUBWIN_CV", "EMG1_MDF_SUBWIN_IQR", "EMG1_WL_SUBWIN_CV",
     ],
-    # EMG 频域 (18) — limit 3
+    # EMG 频域：粗分带 + 细分带 + 频谱形态
     # 佩戴时功率集中在 20-200Hz 且各子频段呈特征性分布，非佩戴时频谱平坦各段均匀
     # SE95: 95%累积功率频率 — 真实EMG频谱集中(SE95低)，噪声平缓(SE95高)
     "emg_frequency": [
         "EMG0_MNF", "EMG0_MDF", "EMG0_PKF", "EMG0_PSR",
         "EMG0_POW_20_60", "EMG0_POW_60_150", "EMG0_POW_150_450", "EMG0_POW_LH_RATIO",
+        "EMG0_POW_20_40", "EMG0_POW_40_60", "EMG0_POW_60_90", "EMG0_POW_90_120",
+        "EMG0_POW_120_180", "EMG0_POW_180_250", "EMG0_POW_250_350", "EMG0_POW_350_450",
+        "EMG0_RATIO_60_150_TO_20_60", "EMG0_RATIO_60_180_TO_250_450",
+        "EMG0_RATIO_20_90_TO_180_450", "EMG0_RATIO_40_120_TO_120_350",
         "EMG0_SE95",
         "EMG0_SPEC_ENTROPY", "EMG0_SPEC_FLATNESS",
         "EMG0_SPEC_CENTROID", "EMG0_SPEC_ROLLOFF_85",
         "EMG1_MNF", "EMG1_MDF", "EMG1_PKF", "EMG1_PSR",
         "EMG1_POW_20_60", "EMG1_POW_60_150", "EMG1_POW_150_450", "EMG1_POW_LH_RATIO",
+        "EMG1_POW_20_40", "EMG1_POW_40_60", "EMG1_POW_60_90", "EMG1_POW_90_120",
+        "EMG1_POW_120_180", "EMG1_POW_180_250", "EMG1_POW_250_350", "EMG1_POW_350_450",
+        "EMG1_RATIO_60_150_TO_20_60", "EMG1_RATIO_60_180_TO_250_450",
+        "EMG1_RATIO_20_90_TO_180_450", "EMG1_RATIO_40_120_TO_120_350",
         "EMG1_SE95",
         "EMG1_SPEC_ENTROPY", "EMG1_SPEC_FLATNESS",
         "EMG1_SPEC_CENTROID", "EMG1_SPEC_ROLLOFF_85",
@@ -202,7 +210,9 @@ FEATURE_GROUPS = {
     # 注: 无伪造标签训练数据时这些特征 importance 不会高，靠 min_anti_spoof_features 强制保留
     "anti_spoof": [
         "EMG0_50HZ_RATIO", "EMG0_50HZ_HARM_RATIO",
+        "EMG0_40_60HZ_RATIO",
         "EMG1_50HZ_RATIO", "EMG1_50HZ_HARM_RATIO",
+        "EMG1_40_60HZ_RATIO",
         "EMG0_DRIFT_HF_RATIO",
         "EMG1_DRIFT_HF_RATIO",
         "PPG_DICROTIC_RATIO", "PPG_AUG_INDEX_MEAN", "PPG_PULSE_WIDTH_CV",
@@ -218,7 +228,7 @@ GROUP_LIMITS_DEFAULT = {
     # EMG — 佩戴检测核心，给最多名额
     "emg_contact": 3,
     "emg_activity": 2,
-    "emg_frequency": 4,
+    "emg_frequency": 6,
     "emg_complexity": 1,
     "emg_cross": 2,
     "emg_leakage": 4,

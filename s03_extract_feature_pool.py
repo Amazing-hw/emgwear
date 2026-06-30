@@ -37,7 +37,7 @@ import h5py
 import numpy as np
 import pandas as pd
 
-from scipy.signal import resample_poly, butter, filtfilt, medfilt, correlate, find_peaks
+from scipy.signal import resample_poly, butter, filtfilt, medfilt, correlate, find_peaks, iirnotch
 
 # Linux/macOS 默认 fork 模式多进程读 H5 可能死锁，强制 spawn
 if sys.platform != "win32":
@@ -53,10 +53,11 @@ if sys.platform != "win32":
 
 EPS = 1e-12
 
-# EMG 窄带 notch 配置
-# 工频漂移 (50Hz) + PPG LED 100Hz 切换产生的串扰谐波 (100/150/200/250/300Hz)
-_EMG_NOTCH_BW_HZ = 0.8             # notch 单边带宽（±0.8Hz，覆盖 49.2-50.8 等）
-_EMG_CLEAN_NOTCH_FREQS = (50.0, 100.0, 150.0, 200.0, 250.0, 300.0)
+# EMG 滤波配置：常规特征使用 highpass + narrow bandstop + high-Q notch。
+_EMG_NOTCH_BW_HZ = 0.8             # leak 特征的单边统计带宽
+_EMG_CLEAN_BANDSTOP_RANGES = ((49.8, 50.2), (149.8, 150.2))
+_EMG_CLEAN_NOTCH_FREQS = (50.0, 100.0, 200.0, 300.0, 400.0)
+_EMG_CLEAN_NOTCH_Q = 100.0
 _EMG_LEAK_FREQS = (100.0, 150.0, 200.0, 250.0, 300.0)  # PPG 串扰特征频点（不含工频 50Hz）
 _EMG_MAD_CLIP_K = 10.0          # 超过 K×MAD 视为离群点 (电极 pop)
 _ACC_BURR_K = 6.0               # ACC 每轴去毛刺阈值倍数
@@ -319,6 +320,7 @@ def remove_step(x, step_k=10.0):
 
 
 _BUTTER_CACHE = {}
+_IIR_NOTCH_CACHE = {}
 
 
 def _get_butter_coeffs(fs, lowcut, highcut, order):
@@ -338,6 +340,35 @@ def _get_butter_coeffs(fs, lowcut, highcut, order):
     except Exception:
         _BUTTER_CACHE[key] = None
         return None
+
+
+def _get_butter_highpass_coeffs(fs, cutoff, order):
+    key = (float(fs), "highpass", float(cutoff), int(order))
+    if key in _BUTTER_CACHE:
+        return _BUTTER_CACHE[key]
+    nyq = 0.5 * fs
+    wn = min(max(cutoff / nyq, 1e-6), 0.999)
+    try:
+        b, a = butter(order, wn, btype="highpass")
+        _BUTTER_CACHE[key] = (b, a)
+        return _BUTTER_CACHE[key]
+    except Exception:
+        _BUTTER_CACHE[key] = None
+        return None
+
+
+def highpass_filter(x, fs, cutoff, order=2):
+    x = np.asarray(x, dtype=np.float64)
+    if len(x) < 16:
+        return x.copy()
+    coeffs = _get_butter_highpass_coeffs(fs, cutoff, order)
+    if coeffs is None:
+        return x.copy()
+    b, a = coeffs
+    try:
+        return filtfilt(b, a, x)
+    except Exception:
+        return x - np.median(x)
 
 
 def bandpass_filter(x, fs, lowcut, highcut, order=2):
@@ -381,11 +412,11 @@ def preprocess_signal(x, fs, bp_low=0.4, bp_high=6.0):
 
 def preprocess_emg_signal(x, fs=1000.0):
     """
-    EMG 预处理：去均值 → 带通 (20-450Hz) → 统一 notch (50/100/150/200/250/300, ±0.8Hz) → 全波整流。
+    EMG 预处理：去均值 → 鲁棒清理 → highpass(20Hz) → 指定窄带滤波 → 全波整流。
 
     返回 (bp_leak_ref, bp_clean, env)：
-      - bp_leak_ref: 20-450Hz 带通，不做任何 notch，用于 leak 特征 + mains 特征
-      - bp_clean:    再做统一 notch (50-300Hz)，用于常规 EMG 时频特征 (MNF/MDF/PKF 等)
+      - bp_leak_ref: highpass(20Hz) 后、bandstop/notch 前参考，用于 leak + mains 特征
+      - bp_clean:    bandstop(49.8-50.2,149.8-150.2) + notch(50/100/200/300/400Hz,Q=100) 后信号
       - env:         基于 bp_clean 的全波整流包络
 
     注: baseline drift (1-10Hz) 特征需要的原始去均值信号通过 preprocess_emg_signal_with_raw 获取。
@@ -426,6 +457,24 @@ def _narrow_notch(x, fs, f0, bw_hz=0.8, order=2):
         return x
 
 
+def _iir_notch_filter(x, fs, f0, q=100.0):
+    key = (float(fs), float(f0), float(q))
+    if key not in _IIR_NOTCH_CACHE:
+        try:
+            b, a = iirnotch(float(f0), float(q), fs=float(fs))
+            _IIR_NOTCH_CACHE[key] = (b, a)
+        except Exception:
+            _IIR_NOTCH_CACHE[key] = None
+    coeffs = _IIR_NOTCH_CACHE[key]
+    if coeffs is None:
+        return x
+    b, a = coeffs
+    try:
+        return filtfilt(b, a, x)
+    except Exception:
+        return x
+
+
 def _emg_robust_clean(x):
     """EMG 鲁棒清理：3 点中值（消除孤立尖峰）+ MAD 钳位（电极 pop 截断）。
 
@@ -447,29 +496,33 @@ def _emg_robust_clean(x):
 def preprocess_emg_signal_with_raw(x, fs=1000.0):
     """同 preprocess_emg_signal，但额外返回去均值（无带通）的原始信号，用于 baseline drift。
 
-    流水线：demean → [鲁棒清理: medfilt(3) + MAD 钳位] → 20-450Hz 带通
-            → 保存 bp_leak_ref (notch 前参考，含 50Hz 和 PPG 串扰)
-            → 统一 notch (50/100/150/200/250/300, ±0.8Hz) → 包络。
+    流水线：demean → [鲁棒清理: medfilt(3) + MAD 钳位] → highpass(20Hz)
+            → 保存 bp_leak_ref (bandstop/notch 前参考，含 50Hz 和 PPG 串扰)
+            → bandstop(49.8-50.2,149.8-150.2)
+            → notch(50/100/200/300/400Hz,Q=100) → 包络。
 
     返回 (bp_leak_ref, bp_clean, env, x_demean)：
-      - bp_leak_ref:  20-450Hz 带通，不做任何 notch，用于 leak 特征 + 50Hz mains 特征
-      - bp_clean:     再做统一 notch (50-300Hz)，已清理工频+PPG 串扰，用于 MNF/MDF/PKF 等
+      - bp_leak_ref:  highpass(20Hz) 后、bandstop/notch 前参考，用于 leak + mains 特征
+      - bp_clean:     指定窄带滤波后的信号，用于 MNF/MDF/PKF 等
       - env:          abs(bp_clean)
       - x_demean:     仅去均值（未做鲁棒清理），用于 baseline drift (1-10Hz)
     """
     x = np.asarray(x, dtype=np.float64).copy()
     x_demean = x - np.mean(x)
 
-    # 鲁棒清理后再带通，避免尖峰被 filtfilt 抹成长尾
+    # 鲁棒清理后再高通，避免尖峰被 filtfilt 抹成长尾
     x_clean = _emg_robust_clean(x_demean.copy())
-    bp = bandpass_filter(x_clean, fs, lowcut=20.0, highcut=450.0, order=4)
+    bp = highpass_filter(x_clean, fs, cutoff=20.0, order=2)
 
-    # 保存 notch 前参考信号：含全部窄带能量，用于 leak 特征和 mains 特征
+    # 保存 bandstop/notch 前参考信号：含全部窄带能量，用于 leak 特征和 mains 特征
     bp_leak_ref = bp.copy()
 
-    # 统一 notch: 工频 (50Hz) + PPG 串扰谐波 (100/150/200/250/300Hz)
+    # 指定窄带滤波：工频/PPG 串扰主要频点。
+    for lo, hi in _EMG_CLEAN_BANDSTOP_RANGES:
+        center = (lo + hi) / 2.0
+        bp = _narrow_notch(bp, fs, center, bw_hz=(hi - lo) / 2.0, order=2)
     for f0 in _EMG_CLEAN_NOTCH_FREQS:
-        bp = _narrow_notch(bp, fs, f0, bw_hz=_EMG_NOTCH_BW_HZ)
+        bp = _iir_notch_filter(bp, fs, f0, q=_EMG_CLEAN_NOTCH_Q)
     bp_clean = bp
 
     env = np.abs(bp_clean)
@@ -974,12 +1027,12 @@ def _emg_welch_spectrum(x, fs=1000.0, nperseg=512):
 
 
 def extract_emg_frequency_features(emg_bp, fs=1000.0, prefix="EMG"):
-    """EMG 频域特征: MNF, MDF, PKF, PSR + 子频段能量占比 + SE95。
+    """EMG 频域特征: MNF, MDF, PKF, PSR + 子频段能量占比/比值 + SE95。
     Welch 方法 (nperseg=512) 替代单次 FFT，频谱方差更低。
     """
     _KEYS = ["MNF", "MDF", "PKF", "PSR",
              "POW_20_60", "POW_60_150", "POW_150_450", "POW_LH_RATIO",
-             "SE95"]
+             "SE95"] + _EMG_FINE_BAND_KEYS + _EMG_BAND_RATIO_KEYS
     feat = OrderedDict()
     x = np.asarray(emg_bp, dtype=np.float64)
     if len(x) < 16:
@@ -1013,6 +1066,36 @@ def extract_emg_frequency_features(emg_bp, fs=1000.0, prefix="EMG"):
     feat[f"{prefix}_POW_150_450"] = float(pow_150_450 / total_power)
     feat[f"{prefix}_POW_LH_RATIO"] = float(pow_20_60 / (pow_150_450 + EPS))
 
+    def _pow(lo, hi, include_low=True):
+        lo_mask = band_freqs >= lo if include_low else band_freqs > lo
+        return float(np.sum(Pxx[lo_mask & (band_freqs <= hi)]))
+
+    fine_specs = [
+        ("POW_20_40", 20.0, 40.0, True),
+        ("POW_40_60", 40.0, 60.0, False),
+        ("POW_60_90", 60.0, 90.0, False),
+        ("POW_90_120", 90.0, 120.0, False),
+        ("POW_120_180", 120.0, 180.0, False),
+        ("POW_180_250", 180.0, 250.0, False),
+        ("POW_250_350", 250.0, 350.0, False),
+        ("POW_350_450", 350.0, 450.0, False),
+    ]
+    band_cache = {}
+    for key, lo, hi, include_low in fine_specs:
+        band_cache[(lo, hi, include_low)] = _pow(lo, hi, include_low=include_low)
+        feat[f"{prefix}_{key}"] = float(band_cache[(lo, hi, include_low)] / total_power)
+
+    p_60_180 = _pow(60.0, 180.0, include_low=False)
+    p_250_450 = _pow(250.0, 450.0, include_low=False)
+    p_20_90 = _pow(20.0, 90.0, include_low=True)
+    p_180_450 = _pow(180.0, 450.0, include_low=False)
+    p_40_120 = _pow(40.0, 120.0, include_low=False)
+    p_120_350 = _pow(120.0, 350.0, include_low=False)
+    feat[f"{prefix}_RATIO_60_150_TO_20_60"] = float(pow_60_150 / (pow_20_60 + EPS))
+    feat[f"{prefix}_RATIO_60_180_TO_250_450"] = float(p_60_180 / (p_250_450 + EPS))
+    feat[f"{prefix}_RATIO_20_90_TO_180_450"] = float(p_20_90 / (p_180_450 + EPS))
+    feat[f"{prefix}_RATIO_40_120_TO_120_350"] = float(p_40_120 / (p_120_350 + EPS))
+
     se95_idx = np.searchsorted(cumsum, cumsum[-1] * 0.95)
     feat[f"{prefix}_SE95"] = float(band_freqs[min(se95_idx, len(band_freqs) - 1)])
 
@@ -1030,21 +1113,21 @@ def _emg_band_power(spec_sq, freqs, low, high):
 def extract_emg_mains_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
     """50Hz 工频拾取特征。Welch (nperseg=1024) 替代单次 FFT。
 
-    bp_leak_ref 是 20-450Hz 带通后的 notch 前参考信号（含 50Hz 和 PPG 串扰）。
-    谐波检测区间为 50/150/250Hz。
+    bp_leak_ref 是 highpass(20Hz) 后、bandstop/notch 前参考信号（含 50Hz 和 PPG 串扰）。
+    主工频检测区间为 49.5-50.5Hz，宽带兜底区间为 40-60Hz，谐波检测区间为 150/250Hz ±0.5Hz。
     注：50HZ_HARM_RATIO 在 150/250Hz 处可能包含 PPG 串扰贡献，
         由新增的 LEAK_* 特征显式分离。
     """
     feat = OrderedDict()
     x = np.asarray(bp_leak_ref, dtype=np.float64)
     if len(x) < 16:
-        for k in ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO"]:
+        for k in ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO"]:
             feat[f"{prefix}_{k}"] = 0.0
         return feat
 
     freqs, Pxx = _emg_welch_spectrum(x, fs, nperseg=1024)
     if freqs is None:
-        for k in ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO"]:
+        for k in ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO"]:
             feat[f"{prefix}_{k}"] = 0.0
         return feat
 
@@ -1053,20 +1136,22 @@ def extract_emg_mains_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
         return float(np.sum(Pxx[m])) if np.any(m) else 0.0
 
     total_pow = _band_sum(2.0, 450.0) + EPS
-    p_50  = _band_sum(48.0, 52.0)
-    p_150 = _band_sum(148.0, 152.0)
-    p_250 = _band_sum(248.0, 252.0)
+    p_50  = _band_sum(49.5, 50.5)
+    p_150 = _band_sum(149.5, 150.5)
+    p_250 = _band_sum(249.5, 250.5)
+    p_40_60 = _band_sum(40.0, 60.0)
 
     feat[f"{prefix}_PWR_50HZ"] = float(np.log1p(p_50))
     feat[f"{prefix}_50HZ_RATIO"] = float(p_50 / total_pow)
     feat[f"{prefix}_50HZ_HARM_RATIO"] = float((p_50 + p_150 + p_250) / total_pow)
+    feat[f"{prefix}_40_60HZ_RATIO"] = float(p_40_60 / total_pow)
     return feat
 
 
 def extract_emg_leakage_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
     """PPG 窄带串扰显式特征。
 
-    bp_leak_ref: 20-450Hz 带通后的 notch 前参考信号（不做任何 notch）。
+    bp_leak_ref: highpass(20Hz) 后、bandstop/notch 前参考信号。
     特征：对 _EMG_LEAK_FREQS 中每个频点计算 f0±NOTCH_BW 频段能量占比。
     ratio 分母为 20-450Hz 总能量。
 
@@ -1116,11 +1201,11 @@ def extract_emg_leakage_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
 
 
 def extract_emg_baseline_drift(x_demean, bp_leak_ref, fs=1000.0, prefix="EMG0"):
-    """EMG 接触噪声底：notch 前低频 1-10Hz baseline drift。
+    """EMG 接触噪声底：基于原始去均值信号的低频 1-10Hz baseline drift。
 
     入参:
-      x_demean:    去均值但未做带通的原始 EMG（来自 preprocess_emg_signal_with_raw）
-      bp_leak_ref: 20-450Hz 带通 notch 前参考信号，用于 HF 参考能量
+      x_demean:    去均值但未做高通/陷波的原始 EMG（来自 preprocess_emg_signal_with_raw）
+      bp_leak_ref: highpass(20Hz) 后、bandstop/notch 前参考信号，用于 HF 参考能量
 
     返回:
       {prefix}_BASELINE_DRIFT_POW: log1p(P(1-10Hz)) 绝对量
@@ -1147,13 +1232,23 @@ def extract_emg_baseline_drift(x_demean, bp_leak_ref, fs=1000.0, prefix="EMG0"):
     return feat
 
 
-_EMG_ANTI_SPOOF_KEYS = ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO",
+_EMG_ANTI_SPOOF_KEYS = ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO",
                         "BASELINE_DRIFT_POW", "DRIFT_HF_RATIO"]
 
 _EMG_LEAK_KEYS = ["LEAK_100_RATIO", "LEAK_150_RATIO", "LEAK_200_RATIO",
                    "LEAK_250_RATIO", "LEAK_300_RATIO",
                    "LEAK_SUM_RATIO", "LEAK_MAX_RATIO", "LEAK_MAX_FREQ"]
 
+_EMG_FINE_BAND_KEYS = [
+    "POW_20_40", "POW_40_60", "POW_60_90", "POW_90_120",
+    "POW_120_180", "POW_180_250", "POW_250_350", "POW_350_450",
+]
+_EMG_BAND_RATIO_KEYS = [
+    "RATIO_60_150_TO_20_60",
+    "RATIO_60_180_TO_250_450",
+    "RATIO_20_90_TO_180_450",
+    "RATIO_40_120_TO_120_350",
+]
 _EMG_SUBWIN_KEYS = ["RMS_SUBWIN_CV", "MDF_SUBWIN_IQR", "WL_SUBWIN_CV"]
 _EMG_SPEC_SHAPE_KEYS = ["SPEC_ENTROPY", "SPEC_FLATNESS", "SPEC_CENTROID", "SPEC_ROLLOFF_85"]
 
@@ -1307,7 +1402,7 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
                        "MNF", "MDF", "PKF", "PSR",
                        "POW_20_60", "POW_60_150", "POW_150_450", "POW_LH_RATIO",
                        "SE95",
-                       "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
+                       "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_FINE_BAND_KEYS + _EMG_BAND_RATIO_KEYS + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
                 feat[f"EMG{ch}_{k}"] = 0.0
         feat["EMG_CROSS_CORR"] = 0.0
         feat["EMG_RMS_RATIO"] = 0.0
@@ -1370,7 +1465,7 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
                    "MNF", "MDF", "PKF", "PSR",
                    "POW_20_60", "POW_60_150", "POW_150_450", "POW_LH_RATIO",
                    "SE95",
-                   "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
+                   "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_FINE_BAND_KEYS + _EMG_BAND_RATIO_KEYS + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
             feat[f"EMG1_{k}"] = 0.0
         feat["EMG_CROSS_CORR"] = 0.0
         feat["EMG_RMS_RATIO"] = 0.0
@@ -2049,7 +2144,7 @@ def _extract_rows_for_sample(sample, dc_threshold, ac_dc_threshold,
                 feat["start_100hz"] = start
                 rows.append(feat)
             except Exception as e:
-                print(f"鐗瑰緛鎻愬彇澶辫触: sample={sample.get('sample_name')}, "
+                print(f"特征提取失败: sample={sample.get('sample_name')}, "
                       f"start={start}, error={e}")
                 continue
         return rows

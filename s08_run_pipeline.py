@@ -424,6 +424,18 @@ def _build_feature_code_map():
         "EMG0_POW_20_60": "emg0_freq[4]", "EMG0_POW_60_150": "emg0_freq[5]",
         "EMG0_POW_150_450": "emg0_freq[6]", "EMG0_POW_LH_RATIO": "emg0_freq[7]",
         "EMG0_SE95": "emg0_freq[8]",
+        "EMG0_POW_20_40": "emg0_freq[9]",
+        "EMG0_POW_40_60": "emg0_freq[10]",
+        "EMG0_POW_60_90": "emg0_freq[11]",
+        "EMG0_POW_90_120": "emg0_freq[12]",
+        "EMG0_POW_120_180": "emg0_freq[13]",
+        "EMG0_POW_180_250": "emg0_freq[14]",
+        "EMG0_POW_250_350": "emg0_freq[15]",
+        "EMG0_POW_350_450": "emg0_freq[16]",
+        "EMG0_RATIO_60_150_TO_20_60": "emg0_freq[17]",
+        "EMG0_RATIO_60_180_TO_250_450": "emg0_freq[18]",
+        "EMG0_RATIO_20_90_TO_180_450": "emg0_freq[19]",
+        "EMG0_RATIO_40_120_TO_120_350": "emg0_freq[20]",
         "EMG0_RMS_SUBWIN_CV": "emg0_subwin[0]",
         "EMG0_MDF_SUBWIN_IQR": "emg0_subwin[1]",
         "EMG0_WL_SUBWIN_CV": "emg0_subwin[2]",
@@ -451,6 +463,18 @@ def _build_feature_code_map():
         "EMG1_POW_20_60": "emg1_freq[4]", "EMG1_POW_60_150": "emg1_freq[5]",
         "EMG1_POW_150_450": "emg1_freq[6]", "EMG1_POW_LH_RATIO": "emg1_freq[7]",
         "EMG1_SE95": "emg1_freq[8]",
+        "EMG1_POW_20_40": "emg1_freq[9]",
+        "EMG1_POW_40_60": "emg1_freq[10]",
+        "EMG1_POW_60_90": "emg1_freq[11]",
+        "EMG1_POW_90_120": "emg1_freq[12]",
+        "EMG1_POW_120_180": "emg1_freq[13]",
+        "EMG1_POW_180_250": "emg1_freq[14]",
+        "EMG1_POW_250_350": "emg1_freq[15]",
+        "EMG1_POW_350_450": "emg1_freq[16]",
+        "EMG1_RATIO_60_150_TO_20_60": "emg1_freq[17]",
+        "EMG1_RATIO_60_180_TO_250_450": "emg1_freq[18]",
+        "EMG1_RATIO_20_90_TO_180_450": "emg1_freq[19]",
+        "EMG1_RATIO_40_120_TO_120_350": "emg1_freq[20]",
         "EMG1_RMS_SUBWIN_CV": "emg1_subwin[0]",
         "EMG1_MDF_SUBWIN_IQR": "emg1_subwin[1]",
         "EMG1_WL_SUBWIN_CV": "emg1_subwin[2]",
@@ -490,12 +514,14 @@ def _build_feature_code_map():
         "SIG_LEN": "float(len(ppg))",
         "SIG_SEC": "float(len(ppg)/fs)",
         # EMG 50Hz mains (on bp_leak_ref, before any notch)
-        "EMG0_PWR_50HZ": "float(np.log1p(_band_power(emg0_leak_ref, 48, 52, fs_emg))) if emg0_leak_ref is not None else 0.0",
-        "EMG0_50HZ_RATIO": "(_band_power(emg0_leak_ref, 48, 52, fs_emg) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
-        "EMG0_50HZ_HARM_RATIO": "((_band_power(emg0_leak_ref, 48, 52, fs_emg)+_band_power(emg0_leak_ref, 148, 152, fs_emg)+_band_power(emg0_leak_ref, 248, 252, fs_emg)) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
-        "EMG1_PWR_50HZ": "float(np.log1p(_band_power(emg1_leak_ref, 48, 52, fs_emg))) if emg1_leak_ref is not None else 0.0",
-        "EMG1_50HZ_RATIO": "(_band_power(emg1_leak_ref, 48, 52, fs_emg) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
-        "EMG1_50HZ_HARM_RATIO": "((_band_power(emg1_leak_ref, 48, 52, fs_emg)+_band_power(emg1_leak_ref, 148, 152, fs_emg)+_band_power(emg1_leak_ref, 248, 252, fs_emg)) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
+        "EMG0_PWR_50HZ": "float(np.log1p(_band_power(emg0_leak_ref, 49.5, 50.5, fs_emg))) if emg0_leak_ref is not None else 0.0",
+        "EMG0_50HZ_RATIO": "(_band_power(emg0_leak_ref, 49.5, 50.5, fs_emg) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
+        "EMG0_50HZ_HARM_RATIO": "((_band_power(emg0_leak_ref, 49.5, 50.5, fs_emg)+_band_power(emg0_leak_ref, 149.5, 150.5, fs_emg)+_band_power(emg0_leak_ref, 249.5, 250.5, fs_emg)) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
+        "EMG0_40_60HZ_RATIO": "(_band_power(emg0_leak_ref, 40, 60, fs_emg) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
+        "EMG1_PWR_50HZ": "float(np.log1p(_band_power(emg1_leak_ref, 49.5, 50.5, fs_emg))) if emg1_leak_ref is not None else 0.0",
+        "EMG1_50HZ_RATIO": "(_band_power(emg1_leak_ref, 49.5, 50.5, fs_emg) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
+        "EMG1_50HZ_HARM_RATIO": "((_band_power(emg1_leak_ref, 49.5, 50.5, fs_emg)+_band_power(emg1_leak_ref, 149.5, 150.5, fs_emg)+_band_power(emg1_leak_ref, 249.5, 250.5, fs_emg)) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
+        "EMG1_40_60HZ_RATIO": "(_band_power(emg1_leak_ref, 40, 60, fs_emg) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
         # EMG baseline drift
         "EMG0_BASELINE_DRIFT_POW": "float(np.log1p(float(np.mean(_bandpass(emg0_demean, fs_emg, 1.0, 10.0, order=2)**2)))) if emg0_demean is not None else 0.0",
         "EMG0_DRIFT_HF_RATIO": "(float(np.mean(_bandpass(emg0_demean, fs_emg, 1.0, 10.0, order=2)**2)) / (float(np.mean(emg0_leak_ref**2)) + EPS)) if emg0_demean is not None and emg0_leak_ref is not None else 0.0",
@@ -599,7 +625,7 @@ Output: feature vector (list of {n_features} floats)
 Dependencies: numpy, scipy
 """
 import numpy as np
-from scipy.signal import butter, filtfilt, medfilt, correlate, find_peaks
+from scipy.signal import butter, filtfilt, medfilt, correlate, find_peaks, iirnotch
 
 EPS = 1e-12
 FEATURE_ORDER = {ORDER_JSON}
@@ -656,6 +682,7 @@ def _remove_step(x, k=10.0):
     return x
 
 _BUTTER_CACHE = {{}}
+_IIR_NOTCH_CACHE = {{}}
 
 def _bandpass(x, fs=100, lowcut=0.4, highcut=6.0, order=4):
     if len(x) < 16:
@@ -664,6 +691,21 @@ def _bandpass(x, fs=100, lowcut=0.4, highcut=6.0, order=4):
     if key not in _BUTTER_CACHE:
         nyq = 0.5 * fs
         b, a = butter(order, [max(lowcut/nyq, 1e-6), min(highcut/nyq, 0.999)], btype="band")
+        _BUTTER_CACHE[key] = (b, a)
+    b, a = _BUTTER_CACHE[key]
+    try:
+        return filtfilt(b, a, x)
+    except Exception:
+        return x - np.median(x)
+
+
+def _highpass(x, fs=1000, cutoff=20.0, order=2):
+    if len(x) < 16:
+        return x.copy()
+    key = (float(fs), "highpass", float(cutoff), int(order))
+    if key not in _BUTTER_CACHE:
+        nyq = 0.5 * fs
+        b, a = butter(order, min(max(cutoff/nyq, 1e-6), 0.999), btype="highpass")
         _BUTTER_CACHE[key] = (b, a)
     b, a = _BUTTER_CACHE[key]
     try:
@@ -768,24 +810,24 @@ def _smooth_envelope(x, fs=25, win_sec=0.25):
     return np.convolve(x, np.ones(w) / w, mode="same")
 
 def _emg_frequency_features(bp, fs=1000):
-    """Returns (MNF, MDF, PKF, PSR, POW_20_60, POW_60_150, POW_150_450, POW_LH_RATIO, SE95).
+    """Returns coarse and fine EMG spectral power features.
     使用 Welch 方法 (nperseg=512)，与 s03 训练代码保持一致。
     """
     if bp is None or len(bp) < 16:
-        return (0.0,) * 9
+        return (0.0,) * 21
     x = np.asarray(bp, dtype=np.float64)
     try:
         from scipy.signal import welch
         nperseg = 512
         if len(x) < nperseg:
-            return (0.0,) * 9
+            return (0.0,) * 21
         noverlap = nperseg // 2
         f, Pxx = welch(x, fs=fs, nperseg=nperseg, noverlap=noverlap)
     except Exception:
-        return (0.0,) * 9
+        return (0.0,) * 21
     mask = (f >= 20) & (f <= 450)
     if not np.any(mask) or np.sum(Pxx[mask]) < EPS:
-        return (0.0,) * 9
+        return (0.0,) * 21
     bf, bs = f[mask], Pxx[mask]
     total_p = np.sum(bs) + EPS
     mnf = float(np.sum(bf * bs) / total_p)
@@ -802,7 +844,34 @@ def _emg_frequency_features(bp, fs=1000):
     pow_lh = float(np.sum(bs[(bf >= 20) & (bf <= 60)]) / (np.sum(bs[(bf > 150) & (bf <= 450)]) + EPS))
     se95_idx = np.searchsorted(cumsum, cumsum[-1] * 0.95)
     se95 = float(bf[min(se95_idx, len(bf) - 1)])
-    return mnf, mdf, pkf, psr, pow_20_60, pow_60_150, pow_150_450, pow_lh, se95
+    def _pow(lo, hi, include_low=True):
+        lo_mask = bf >= lo if include_low else bf > lo
+        return float(np.sum(bs[lo_mask & (bf <= hi)]))
+    p_20_40 = _pow(20.0, 40.0, True)
+    p_40_60 = _pow(40.0, 60.0, False)
+    p_60_90 = _pow(60.0, 90.0, False)
+    p_90_120 = _pow(90.0, 120.0, False)
+    p_120_180 = _pow(120.0, 180.0, False)
+    p_180_250 = _pow(180.0, 250.0, False)
+    p_250_350 = _pow(250.0, 350.0, False)
+    p_350_450 = _pow(350.0, 450.0, False)
+    p_60_180 = _pow(60.0, 180.0, False)
+    p_250_450 = _pow(250.0, 450.0, False)
+    p_20_90 = _pow(20.0, 90.0, True)
+    p_180_450 = _pow(180.0, 450.0, False)
+    p_40_120 = _pow(40.0, 120.0, False)
+    p_120_350 = _pow(120.0, 350.0, False)
+    return (
+        mnf, mdf, pkf, psr, pow_20_60, pow_60_150, pow_150_450, pow_lh, se95,
+        float(p_20_40 / total_p), float(p_40_60 / total_p),
+        float(p_60_90 / total_p), float(p_90_120 / total_p),
+        float(p_120_180 / total_p), float(p_180_250 / total_p),
+        float(p_250_350 / total_p), float(p_350_450 / total_p),
+        float((pow_60_150 * total_p) / ((pow_20_60 * total_p) + EPS)),
+        float(p_60_180 / (p_250_450 + EPS)),
+        float(p_20_90 / (p_180_450 + EPS)),
+        float(p_40_120 / (p_120_350 + EPS)),
+    )
 
 def _emg_subwindow_features(bp, env, fs=1000):
     if bp is None or len(bp) < int(fs):
@@ -933,6 +1002,23 @@ def _narrow_notch(x, fs, f0, bw_hz=0.8, order=2):
     except Exception:
         return x
 
+def _iir_notch_filter(x, fs, f0, q=100.0):
+    key = (float(fs), float(f0), float(q))
+    if key not in _IIR_NOTCH_CACHE:
+        try:
+            b, a = iirnotch(float(f0), float(q), fs=float(fs))
+            _IIR_NOTCH_CACHE[key] = (b, a)
+        except Exception:
+            _IIR_NOTCH_CACHE[key] = None
+    coeffs = _IIR_NOTCH_CACHE[key]
+    if coeffs is None:
+        return x
+    b, a = coeffs
+    try:
+        return filtfilt(b, a, x)
+    except Exception:
+        return x
+
 def _compute_leak_ratios(bp_ref, fs, leak_freqs, bw_hz=0.8):
     """Compute narrowband leakage ratios on notch-free reference signal.
     使用 Welch 方法 (nperseg=512)，与 s03 extract_emg_leakage_features 一致。
@@ -992,12 +1078,14 @@ def _preprocess_emg(x, fs=1000):
     x = np.asarray(x, dtype=np.float64).copy()
     x_demean = x - np.mean(x)
     x_clean = _emg_robust_clean(x_demean.copy())
-    bp = _bandpass(x_clean, fs, lowcut=20.0, highcut=450.0, order=4)
-    # 保存 notch 前参考信号
+    bp = _highpass(x_clean, fs, cutoff=20.0, order=2)
+    # 保存 bandstop/notch 前参考信号
     bp_leak_ref = bp.copy()
-    # 统一 notch (50/100/150/200/250/300, bw=0.8Hz)
-    for f0 in (50.0, 100.0, 150.0, 200.0, 250.0, 300.0):
-        bp = _narrow_notch(bp, fs, f0, bw_hz=0.8)
+    for lo, hi in ((49.8, 50.2), (149.8, 150.2)):
+        center = (lo + hi) / 2.0
+        bp = _narrow_notch(bp, fs, center, bw_hz=(hi - lo) / 2.0, order=2)
+    for f0 in (50.0, 100.0, 200.0, 300.0, 400.0):
+        bp = _iir_notch_filter(bp, fs, f0, q=100.0)
     bp_clean = bp
     env = np.abs(bp_clean)
     return bp_leak_ref, bp_clean, env, x_demean
@@ -1215,7 +1303,7 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         emg0_leak = _compute_leak_ratios(emg0_leak_ref, fs_emg, EMG_LEAK_FREQS) if emg0_leak_ref is not None else (0,)*5
         emg1_leak = _compute_leak_ratios(emg1_leak_ref, fs_emg, EMG_LEAK_FREQS) if emg1_leak_ref is not None else (0,)*5
         emg0_freq = _emg_frequency_features(emg0_bp, fs_emg)
-        emg1_freq = _emg_frequency_features(emg1_bp, fs_emg) if emg1_bp is not None else (0,)*9
+        emg1_freq = _emg_frequency_features(emg1_bp, fs_emg) if emg1_bp is not None else (0,) * 21
         emg0_subwin = _emg_subwindow_features(emg0_bp, emg0_env, fs_emg)
         emg1_subwin = _emg_subwindow_features(emg1_bp, emg1_env, fs_emg) if emg1_bp is not None else (0.0, 0.0, 0.0)
         emg0_spec_shape = _emg_spectral_shape_features(emg0_bp, fs_emg)
@@ -1231,7 +1319,7 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         emg0_leak_ref = emg0_bp = emg0_env = emg0_demean = None
         emg1_leak_ref = emg1_bp = emg1_env = emg1_demean = None
         emg0_leak = emg1_leak = (0,) * 5
-        emg0_freq = emg1_freq = (0,) * 9
+        emg0_freq = emg1_freq = (0,) * 21
         emg0_subwin = emg1_subwin = (0.0, 0.0, 0.0)
         emg0_spec_shape = emg1_spec_shape = (0.0, 0.0, 0.0, 0.0)
         emg_channel_balance = (0.0, 0.0, 0.0)
@@ -1395,7 +1483,7 @@ def export_deploy_cookbook(artifact_dir):
             "_note": "对单通道 PPG 执行管线: remove_burr → remove_step → medfilt(50ms) → movavg(30ms) → BP(0.4-6Hz, order=4)",
         },
         "A_preprocessing_emg": {
-            "_note": "对 EMG 执行: demean → robust_clean(medfilt3+MAD_clip) → BP(20-450Hz) → unified_notch(50/100/150/200/250/300, ±0.8Hz) → envelope; 窄带串扰由 LEAK_* 特征显式建模",
+            "_note": "对 EMG 执行: demean → robust_clean(medfilt3+MAD_clip) → highpass(20Hz) → bandstop(49.8-50.2,149.8-150.2) → notch(50/100/200/300/400Hz,Q=100) → envelope; 工频/串扰占比由陷波前参考信号显式建模",
         },
         "B_selected_features": {
             "_note": f"共 {len(selected)} 个特征",
