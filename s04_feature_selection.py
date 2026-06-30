@@ -67,8 +67,10 @@ FEATURE_GROUPS = {
     "emg_contact": [
         "EMG0_MAV", "EMG0_RMS", "EMG0_SNR",
         "EMG0_SKEWNESS", "EMG0_KURTOSIS",
+        "EMG0_SAT_FRAC", "EMG0_CLIP_RATE", "EMG0_FLATLINE_FRAC",
         "EMG1_MAV", "EMG1_RMS", "EMG1_SNR",
         "EMG1_SKEWNESS", "EMG1_KURTOSIS",
+        "EMG1_SAT_FRAC", "EMG1_CLIP_RATE", "EMG1_FLATLINE_FRAC",
     ],
     # EMG 肌肉活动: 波形复杂度 + 3s 窗内稳定性 — limit 2
     # P2P/AMP_CV 描述 3s 窗整体包络动态范围；SUBWIN 描述 1s 子窗间稳定性。
@@ -93,6 +95,8 @@ FEATURE_GROUPS = {
         "EMG0_SE95",
         "EMG0_SPEC_ENTROPY", "EMG0_SPEC_FLATNESS",
         "EMG0_SPEC_CENTROID", "EMG0_SPEC_ROLLOFF_85",
+        "EMG0_MNF_SUBWIN_CV", "EMG0_PKF_SUBWIN_IQR",
+        "EMG0_SPEC_ENTROPY_SUBWIN_CV",
         "EMG1_MNF", "EMG1_MDF", "EMG1_PKF", "EMG1_PSR",
         "EMG1_POW_20_60", "EMG1_POW_60_150", "EMG1_POW_150_450", "EMG1_POW_LH_RATIO",
         "EMG1_POW_20_40", "EMG1_POW_40_60", "EMG1_POW_60_90", "EMG1_POW_90_120",
@@ -102,6 +106,8 @@ FEATURE_GROUPS = {
         "EMG1_SE95",
         "EMG1_SPEC_ENTROPY", "EMG1_SPEC_FLATNESS",
         "EMG1_SPEC_CENTROID", "EMG1_SPEC_ROLLOFF_85",
+        "EMG1_MNF_SUBWIN_CV", "EMG1_PKF_SUBWIN_IQR",
+        "EMG1_SPEC_ENTROPY_SUBWIN_CV",
     ],
     # EMG 非线性 (2) — limit 1
     # 活体 EMG 有中等 SampEn，噪声要么极低(0)要么极高(随机)
@@ -112,6 +118,7 @@ FEATURE_GROUPS = {
         "EMG_CROSS_CORR", "EMG_RMS_RATIO",
         "EMG_ENV_CORR", "EMG_MAV_RATIO",
         "EMG_CONTACT_IMBALANCE",
+        "EMG_RMS_RATIO_SUBWIN_CV", "EMG_ENV_LAG_SEC",
     ],
     # EMG PPG 窄带串扰 (16) — limit 6
     # PPG LED 100Hz 切换在 EMG 上的串扰被显式建模为耦合特征
@@ -120,9 +127,15 @@ FEATURE_GROUPS = {
         "EMG0_LEAK_100_RATIO", "EMG0_LEAK_150_RATIO", "EMG0_LEAK_200_RATIO",
         "EMG0_LEAK_250_RATIO", "EMG0_LEAK_300_RATIO",
         "EMG0_LEAK_SUM_RATIO", "EMG0_LEAK_MAX_RATIO",
+        "EMG0_CLEAN_105_145_RATIO", "EMG0_CLEAN_155_195_RATIO",
+        "EMG0_CLEAN_205_245_RATIO", "EMG0_CLEAN_255_295_RATIO",
+        "EMG0_CLEAN_TO_NOISE_RATIO",
         "EMG1_LEAK_100_RATIO", "EMG1_LEAK_150_RATIO", "EMG1_LEAK_200_RATIO",
         "EMG1_LEAK_250_RATIO", "EMG1_LEAK_300_RATIO",
         "EMG1_LEAK_SUM_RATIO", "EMG1_LEAK_MAX_RATIO",
+        "EMG1_CLEAN_105_145_RATIO", "EMG1_CLEAN_155_195_RATIO",
+        "EMG1_CLEAN_205_245_RATIO", "EMG1_CLEAN_255_295_RATIO",
+        "EMG1_CLEAN_TO_NOISE_RATIO",
     ],
 
     # EMG 双通道汇总。仅开放少量代表性 min/max/range/cv，避免 32 个 consensus 全落到 other。
@@ -210,9 +223,9 @@ FEATURE_GROUPS = {
     # 注: 无伪造标签训练数据时这些特征 importance 不会高，靠 min_anti_spoof_features 强制保留
     "anti_spoof": [
         "EMG0_50HZ_RATIO", "EMG0_50HZ_HARM_RATIO",
-        "EMG0_40_60HZ_RATIO",
+        "EMG0_50HZ_NARROW_RATIO", "EMG0_40_60HZ_RATIO",
         "EMG1_50HZ_RATIO", "EMG1_50HZ_HARM_RATIO",
-        "EMG1_40_60HZ_RATIO",
+        "EMG1_50HZ_NARROW_RATIO", "EMG1_40_60HZ_RATIO",
         "EMG0_DRIFT_HF_RATIO",
         "EMG1_DRIFT_HF_RATIO",
         "PPG_DICROTIC_RATIO", "PPG_AUG_INDEX_MEAN", "PPG_PULSE_WIDTH_CV",
@@ -798,8 +811,8 @@ def shap_consistency_check(df_train, df_valid, feature_cols):
 SCALE_DEPENDENT_FEATURES = {
     "PPG_mean", "PPG_std", "PPG_p95",
     "PPG_DC_MEDIAN", "PPG_DC_IQR", "PPG_AC_RMS", "PPG_AC_MAD",
-    "EMG0_MAV", "EMG0_RMS", "EMG0_VAR", "EMG0_WL", "EMG0_IEMG", "EMG0_SNR", "EMG0_P2P",
-    "EMG1_MAV", "EMG1_RMS", "EMG1_VAR", "EMG1_WL", "EMG1_IEMG", "EMG1_SNR", "EMG1_P2P",
+    "EMG0_MAV", "EMG0_RMS", "EMG0_WL", "EMG0_SNR", "EMG0_P2P",
+    "EMG1_MAV", "EMG1_RMS", "EMG1_WL", "EMG1_SNR", "EMG1_P2P",
     "ACC_GRAV_MAG_MEAN", "ACC_AXIS_STD_SUM",
     # 3ch PPG spatial — imbalance/vmag 等归一化为 ratio，scale-invariant
     # dc_cv 和 dc_max_min_ratio 也是 ratio，scale-invariant

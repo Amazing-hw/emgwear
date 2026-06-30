@@ -18,7 +18,7 @@ Stage2 特征提取（3s 滑窗）：
      - 频域/自相关特征
      - Hjorth / Entropy / Derivative / Temporal
   B. EMG 双通道 @ 1000Hz
-     - 时域: MAV, RMS, VAR, WL, ZC, SSC, WAMP
+     - 时域: MAV, RMS, WL, ZC, SSC, WAMP
      - 频域: MNF, MDF, PKF, PSR
      - 非线性: Sample Entropy
      - 通道间: 相关性
@@ -957,8 +957,7 @@ def extract_emg_time_domain_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
     emg_bp: 带通滤波后的 EMG (N,)
     emg_env: 全波整流包络 (N,)
     """
-    _KEYS = ["MAV", "RMS", "VAR", "WL", "ZC", "SSC", "WAMP", "IEMG",
-             "P2P", "AMP_CV"]
+    _KEYS = ["MAV", "RMS", "WL", "ZC", "SSC", "WAMP", "P2P", "AMP_CV"]
     feat = OrderedDict()
     x = np.asarray(emg_env, dtype=np.float64)
     bp = np.asarray(emg_bp, dtype=np.float64)
@@ -969,7 +968,6 @@ def extract_emg_time_domain_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
 
     feat[f"{prefix}_MAV"] = float(np.mean(x))
     feat[f"{prefix}_RMS"] = float(np.sqrt(np.mean(bp ** 2)))
-    feat[f"{prefix}_VAR"] = float(np.var(bp))
     feat[f"{prefix}_WL"] = float(np.sum(np.abs(np.diff(bp))))
     zc = np.sum(np.abs(np.diff(np.sign(bp)))) / (2.0 * len(bp))
     feat[f"{prefix}_ZC"] = float(zc)
@@ -982,8 +980,6 @@ def extract_emg_time_domain_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
     thr = 0.05 * max(np.max(np.abs(bp)), EPS)
     wamp = np.sum(np.abs(np.diff(bp)) > thr) / len(bp)
     feat[f"{prefix}_WAMP"] = float(wamp)
-    feat[f"{prefix}_IEMG"] = float(np.sum(x))
-
     # P2P: 鲁棒峰峰值 (p95-p05) — 佩戴时动态范围大
     feat[f"{prefix}_P2P"] = float(np.percentile(x, 95) - np.percentile(x, 5))
     # AMP_CV: 包络变异系数，描述 3s 窗整体幅值波动程度
@@ -1101,13 +1097,13 @@ def extract_emg_mains_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
     feat = OrderedDict()
     x = np.asarray(bp_leak_ref, dtype=np.float64)
     if len(x) < 16:
-        for k in ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO"]:
+        for k in ["50HZ_RATIO", "50HZ_NARROW_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO"]:
             feat[f"{prefix}_{k}"] = 0.0
         return feat
 
     freqs, Pxx = _emg_welch_spectrum(x, fs, nperseg=1024)
     if freqs is None:
-        for k in ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO"]:
+        for k in ["50HZ_RATIO", "50HZ_NARROW_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO"]:
             feat[f"{prefix}_{k}"] = 0.0
         return feat
 
@@ -1117,12 +1113,13 @@ def extract_emg_mains_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
 
     total_pow = _band_sum(2.0, 450.0) + EPS
     p_50  = _band_sum(49.5, 50.5)
+    p_50_narrow = _band_sum(49.8, 50.2)
     p_150 = _band_sum(149.5, 150.5)
     p_250 = _band_sum(249.5, 250.5)
     p_40_60 = _band_sum(40.0, 60.0)
 
-    feat[f"{prefix}_PWR_50HZ"] = float(np.log1p(p_50))
     feat[f"{prefix}_50HZ_RATIO"] = float(p_50 / total_pow)
+    feat[f"{prefix}_50HZ_NARROW_RATIO"] = float(p_50_narrow / total_pow)
     feat[f"{prefix}_50HZ_HARM_RATIO"] = float((p_50 + p_150 + p_250) / total_pow)
     feat[f"{prefix}_40_60HZ_RATIO"] = float(p_40_60 / total_pow)
     return feat
@@ -1139,18 +1136,17 @@ def extract_emg_leakage_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
         {prefix}_LEAK_{FREQ}_RATIO: 各频点串扰能量占比
         {prefix}_LEAK_SUM_RATIO:    总串扰占比
         {prefix}_LEAK_MAX_RATIO:    最大单频串扰占比
-        {prefix}_LEAK_MAX_FREQ:     最大串扰频点 (Hz)
     """
     feat = OrderedDict()
     x = np.asarray(bp_leak_ref, dtype=np.float64)
     if len(x) < 16:
-        for k in _EMG_LEAK_KEYS:
+        for k in _EMG_LEAK_KEYS + _EMG_CLEAN_NOISE_KEYS:
             feat[f"{prefix}_{k}"] = 0.0
         return feat
 
     freqs, Pxx = _emg_welch_spectrum(x, fs, nperseg=512)
     if freqs is None:
-        for k in _EMG_LEAK_KEYS:
+        for k in _EMG_LEAK_KEYS + _EMG_CLEAN_NOISE_KEYS:
             feat[f"{prefix}_{k}"] = 0.0
         return feat
 
@@ -1171,11 +1167,21 @@ def extract_emg_leakage_features(bp_leak_ref, fs=1000.0, prefix="EMG0"):
         feat[f"{prefix}_LEAK_SUM_RATIO"] = float(np.sum(ratios))
         max_idx = int(np.argmax(ratios))
         feat[f"{prefix}_LEAK_MAX_RATIO"] = float(ratios[max_idx])
-        feat[f"{prefix}_LEAK_MAX_FREQ"] = float(_EMG_LEAK_FREQS[max_idx])
     else:
         feat[f"{prefix}_LEAK_SUM_RATIO"] = 0.0
         feat[f"{prefix}_LEAK_MAX_RATIO"] = 0.0
-        feat[f"{prefix}_LEAK_MAX_FREQ"] = 0.0
+
+    def _band_sum(lo, hi):
+        mask = (freqs >= lo) & (freqs <= hi)
+        return float(np.sum(Pxx[mask])) if np.any(mask) else 0.0
+
+    noise_pow = sum(_band_sum(lo, hi) for lo, hi in _EMG_NOISE_BANDS)
+    clean_pow = 0.0
+    for lo, hi in _EMG_CLEAN_BANDS:
+        p_band = _band_sum(lo, hi)
+        clean_pow += p_band
+        feat[f"{prefix}_CLEAN_{int(lo)}_{int(hi)}_RATIO"] = float(p_band / (noise_pow + EPS))
+    feat[f"{prefix}_CLEAN_TO_NOISE_RATIO"] = float(clean_pow / (noise_pow + EPS))
 
     return feat
 
@@ -1188,13 +1194,11 @@ def extract_emg_baseline_drift(x_raw_ref, bp_leak_ref, fs=1000.0, prefix="EMG0")
       bp_leak_ref: highpass(20Hz) 后、bandstop/notch 前参考信号，用于 HF 参考能量
 
     返回:
-      {prefix}_BASELINE_DRIFT_POW: log1p(P(1-10Hz)) 绝对量
       {prefix}_DRIFT_HF_RATIO:     P(1-10) / P(20-450) — 真接触时偏高（皮肤位移驱动）
     """
     feat = OrderedDict()
     x = np.asarray(x_raw_ref, dtype=np.float64)
     if len(x) < 16:
-        feat[f"{prefix}_BASELINE_DRIFT_POW"] = 0.0
         feat[f"{prefix}_DRIFT_HF_RATIO"] = 0.0
         return feat
 
@@ -1207,17 +1211,26 @@ def extract_emg_baseline_drift(x_raw_ref, bp_leak_ref, fs=1000.0, prefix="EMG0")
     bp = np.asarray(bp_leak_ref, dtype=np.float64)
     p_hf = float(np.mean(bp * bp)) + EPS
 
-    feat[f"{prefix}_BASELINE_DRIFT_POW"] = float(np.log1p(p_lf))
     feat[f"{prefix}_DRIFT_HF_RATIO"] = float(p_lf / p_hf)
     return feat
 
 
-_EMG_ANTI_SPOOF_KEYS = ["PWR_50HZ", "50HZ_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO",
-                        "BASELINE_DRIFT_POW", "DRIFT_HF_RATIO"]
+_EMG_ANTI_SPOOF_KEYS = ["50HZ_RATIO", "50HZ_NARROW_RATIO", "50HZ_HARM_RATIO", "40_60HZ_RATIO",
+                        "DRIFT_HF_RATIO"]
 
 _EMG_LEAK_KEYS = ["LEAK_100_RATIO", "LEAK_150_RATIO", "LEAK_200_RATIO",
                    "LEAK_250_RATIO", "LEAK_300_RATIO",
-                   "LEAK_SUM_RATIO", "LEAK_MAX_RATIO", "LEAK_MAX_FREQ"]
+                   "LEAK_SUM_RATIO", "LEAK_MAX_RATIO"]
+
+_EMG_CLEAN_BANDS = ((105.0, 145.0), (155.0, 195.0), (205.0, 245.0), (255.0, 295.0))
+_EMG_NOISE_BANDS = ((49.8, 50.2), (99.2, 100.8), (149.2, 150.8), (199.2, 200.8), (249.2, 250.8))
+_EMG_CLEAN_NOISE_KEYS = [
+    "CLEAN_105_145_RATIO",
+    "CLEAN_155_195_RATIO",
+    "CLEAN_205_245_RATIO",
+    "CLEAN_255_295_RATIO",
+    "CLEAN_TO_NOISE_RATIO",
+]
 
 _EMG_FINE_BAND_KEYS = [
     "POW_20_40", "POW_40_60", "POW_60_90", "POW_90_120",
@@ -1229,7 +1242,11 @@ _EMG_BAND_RATIO_KEYS = [
     "RATIO_20_90_TO_180_450",
     "RATIO_40_120_TO_120_350",
 ]
-_EMG_SUBWIN_KEYS = ["RMS_SUBWIN_CV", "MDF_SUBWIN_IQR", "WL_SUBWIN_CV"]
+_EMG_QUALITY_KEYS = ["SAT_FRAC", "CLIP_RATE", "FLATLINE_FRAC"]
+_EMG_SUBWIN_KEYS = [
+    "RMS_SUBWIN_CV", "MDF_SUBWIN_IQR", "WL_SUBWIN_CV",
+    "MNF_SUBWIN_CV", "PKF_SUBWIN_IQR", "SPEC_ENTROPY_SUBWIN_CV",
+]
 _EMG_SPEC_SHAPE_KEYS = ["SPEC_ENTROPY", "SPEC_FLATNESS", "SPEC_CENTROID", "SPEC_ROLLOFF_85"]
 
 
@@ -1285,6 +1302,44 @@ def _emg_sample_entropy(x):
     return 0.0
 
 
+def extract_emg_quality_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
+    feat = OrderedDict()
+    if emg_bp is None or emg_env is None:
+        for k in _EMG_QUALITY_KEYS:
+            feat[f"{prefix}_{k}"] = 0.0
+        return feat
+
+    bp = np.asarray(emg_bp, dtype=np.float64)
+    env = np.asarray(emg_env, dtype=np.float64)
+    n = min(len(bp), len(env))
+    if n < 4:
+        for k in _EMG_QUALITY_KEYS:
+            feat[f"{prefix}_{k}"] = 0.0
+        return feat
+
+    bp = bp[:n]
+    env = env[:n]
+    peak = float(np.max(np.abs(bp))) + EPS
+    feat[f"{prefix}_SAT_FRAC"] = float(np.mean(np.abs(bp) >= 0.98 * peak))
+    feat[f"{prefix}_CLIP_RATE"] = float(np.mean(np.abs(np.diff(bp)) < 1e-10)) if n > 1 else 0.0
+
+    scale = float(np.percentile(env, 95)) + EPS
+    flat_thr = max(scale * 1e-4, 1e-10)
+    feat[f"{prefix}_FLATLINE_FRAC"] = float(np.mean(np.abs(np.diff(bp)) <= flat_thr)) if n > 1 else 0.0
+    return feat
+
+
+def _emg_subwindow_spectral_stats(seg, fs):
+    freq_feat = extract_emg_frequency_features(seg, fs=fs, prefix="_TMP")
+    spec_feat = extract_emg_spectral_shape_features(seg, fs=fs, prefix="_TMP")
+    return (
+        float(freq_feat["_TMP_MNF"]),
+        float(freq_feat["_TMP_MDF"]),
+        float(freq_feat["_TMP_PKF"]),
+        float(spec_feat["_TMP_SPEC_ENTROPY"]),
+    )
+
+
 def extract_emg_subwindow_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
     feat = OrderedDict()
     bp = np.asarray(emg_bp, dtype=np.float64)
@@ -1297,14 +1352,20 @@ def extract_emg_subwindow_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
     rms_vals = []
     wl_vals = []
     mdf_vals = []
+    mnf_vals = []
+    pkf_vals = []
+    spec_entropy_vals = []
     for start in range(0, len(bp) - win + 1, win):
         seg = bp[start:start + win]
         if len(seg) < win:
             continue
         rms_vals.append(float(np.sqrt(np.mean(seg * seg))))
         wl_vals.append(float(np.sum(np.abs(np.diff(seg)))))
-        freq_feat = extract_emg_frequency_features(seg, fs=fs, prefix="_TMP")
-        mdf_vals.append(float(freq_feat["_TMP_MDF"]))
+        mnf, mdf, pkf, spec_entropy = _emg_subwindow_spectral_stats(seg, fs)
+        mnf_vals.append(mnf)
+        mdf_vals.append(mdf)
+        pkf_vals.append(pkf)
+        spec_entropy_vals.append(spec_entropy)
 
     if len(rms_vals) < 2:
         for k in _EMG_SUBWIN_KEYS:
@@ -1314,9 +1375,17 @@ def extract_emg_subwindow_features(emg_bp, emg_env, fs=1000.0, prefix="EMG"):
     rms_arr = np.asarray(rms_vals, dtype=np.float64)
     wl_arr = np.asarray(wl_vals, dtype=np.float64)
     mdf_arr = np.asarray(mdf_vals, dtype=np.float64)
+    mnf_arr = np.asarray(mnf_vals, dtype=np.float64)
+    pkf_arr = np.asarray(pkf_vals, dtype=np.float64)
+    spec_entropy_arr = np.asarray(spec_entropy_vals, dtype=np.float64)
     feat[f"{prefix}_RMS_SUBWIN_CV"] = float(np.std(rms_arr) / (np.mean(rms_arr) + EPS))
     feat[f"{prefix}_MDF_SUBWIN_IQR"] = robust_iqr(mdf_arr)
     feat[f"{prefix}_WL_SUBWIN_CV"] = float(np.std(wl_arr) / (np.mean(wl_arr) + EPS))
+    feat[f"{prefix}_MNF_SUBWIN_CV"] = float(np.std(mnf_arr) / (np.mean(mnf_arr) + EPS))
+    feat[f"{prefix}_PKF_SUBWIN_IQR"] = robust_iqr(pkf_arr)
+    feat[f"{prefix}_SPEC_ENTROPY_SUBWIN_CV"] = float(
+        np.std(spec_entropy_arr) / (np.mean(spec_entropy_arr) + EPS)
+    )
     return feat
 
 
@@ -1347,14 +1416,16 @@ def extract_emg_spectral_shape_features(emg_bp, fs=1000.0, prefix="EMG"):
 def extract_emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp, fs=1000.0):
     feat = OrderedDict()
     if ch0_env is None or ch1_env is None or ch0_bp is None or ch1_bp is None:
-        for k in ["EMG_ENV_CORR", "EMG_MAV_RATIO", "EMG_CONTACT_IMBALANCE"]:
+        for k in ["EMG_ENV_CORR", "EMG_MAV_RATIO", "EMG_CONTACT_IMBALANCE",
+                  "EMG_RMS_RATIO_SUBWIN_CV", "EMG_ENV_LAG_SEC"]:
             feat[k] = 0.0
         return feat
 
     n_env = min(len(ch0_env), len(ch1_env))
     n_bp = min(len(ch0_bp), len(ch1_bp))
     if n_env < 4 or n_bp < 4:
-        for k in ["EMG_ENV_CORR", "EMG_MAV_RATIO", "EMG_CONTACT_IMBALANCE"]:
+        for k in ["EMG_ENV_CORR", "EMG_MAV_RATIO", "EMG_CONTACT_IMBALANCE",
+                  "EMG_RMS_RATIO_SUBWIN_CV", "EMG_ENV_LAG_SEC"]:
             feat[k] = 0.0
         return feat
 
@@ -1365,6 +1436,33 @@ def extract_emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp, fs=10
     feat["EMG_ENV_CORR"] = safe_corr(env0, env1, winsorize=True)
     feat["EMG_MAV_RATIO"] = float(np.clip(safe_div(mav0, mav1), 0.0, 1000.0)) if mav1 > EPS else 0.0
     feat["EMG_CONTACT_IMBALANCE"] = float(abs(mav0 - mav1) / (mav0 + mav1 + EPS))
+
+    bp0 = np.asarray(ch0_bp[:n_bp], dtype=np.float64)
+    bp1 = np.asarray(ch1_bp[:n_bp], dtype=np.float64)
+    win = max(16, int(round(fs)))
+    ratios = []
+    for start in range(0, n_bp - win + 1, win):
+        seg0 = bp0[start:start + win]
+        seg1 = bp1[start:start + win]
+        if len(seg0) < win or len(seg1) < win:
+            continue
+        rms0 = float(np.sqrt(np.mean(seg0 * seg0)))
+        rms1 = float(np.sqrt(np.mean(seg1 * seg1)))
+        ratios.append(float(np.clip(rms0 / (rms1 + EPS), 0.0, 1000.0)) if rms1 > EPS else 0.0)
+    if len(ratios) >= 2:
+        ratio_arr = np.asarray(ratios, dtype=np.float64)
+        feat["EMG_RMS_RATIO_SUBWIN_CV"] = float(np.std(ratio_arr) / (np.mean(np.abs(ratio_arr)) + EPS))
+    else:
+        feat["EMG_RMS_RATIO_SUBWIN_CV"] = 0.0
+
+    env0_z = env0 - np.mean(env0)
+    env1_z = env1 - np.mean(env1)
+    if np.std(env0_z) > EPS and np.std(env1_z) > EPS:
+        corr = correlate(env0_z, env1_z, mode="full")
+        lag = int(np.argmax(np.abs(corr)) - (len(env1_z) - 1))
+        feat["EMG_ENV_LAG_SEC"] = float(lag / fs)
+    else:
+        feat["EMG_ENV_LAG_SEC"] = 0.0
     return feat
 
 
@@ -1377,12 +1475,12 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
     ch0_env_for_cross = None
     if emg_window is None or len(emg_window) < 4:
         for ch in [0, 1]:
-            for k in ["MAV", "RMS", "VAR", "WL", "ZC", "SSC", "WAMP", "IEMG",
+            for k in ["MAV", "RMS", "WL", "ZC", "SSC", "WAMP",
                        "P2P", "AMP_CV",
                        "MNF", "MDF", "PKF", "PSR",
                        "POW_20_60", "POW_60_150", "POW_150_450", "POW_LH_RATIO",
                        "SE95",
-                       "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_FINE_BAND_KEYS + _EMG_BAND_RATIO_KEYS + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
+                       "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_QUALITY_KEYS + _EMG_FINE_BAND_KEYS + _EMG_BAND_RATIO_KEYS + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_CLEAN_NOISE_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
                 feat[f"EMG{ch}_{k}"] = 0.0
         feat["EMG_CROSS_CORR"] = 0.0
         feat["EMG_RMS_RATIO"] = 0.0
@@ -1404,6 +1502,7 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
     emg0_ds = _emg_downsample_for_sampen(ch0_bp, fs)
 
     feat.update(extract_emg_time_domain_features(ch0_bp, ch0_env, fs, "EMG0"))
+    feat.update(extract_emg_quality_features(ch0_bp, ch0_env, fs, "EMG0"))
     feat.update(extract_emg_frequency_features(ch0_bp, fs, "EMG0"))
     feat.update(extract_emg_mains_features(ch0_leak, fs, "EMG0"))
     feat.update(extract_emg_leakage_features(ch0_leak, fs, "EMG0"))
@@ -1415,6 +1514,7 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
     if ch1_bp is not None:
         emg1_ds = _emg_downsample_for_sampen(ch1_bp, fs)
         feat.update(extract_emg_time_domain_features(ch1_bp, ch1_env, fs, "EMG1"))
+        feat.update(extract_emg_quality_features(ch1_bp, ch1_env, fs, "EMG1"))
         feat.update(extract_emg_frequency_features(ch1_bp, fs, "EMG1"))
         feat.update(extract_emg_mains_features(ch1_leak, fs, "EMG1"))
         feat.update(extract_emg_leakage_features(ch1_leak, fs, "EMG1"))
@@ -1440,12 +1540,12 @@ def extract_emg_features(emg_window, fs=1000.0, return_signals=False):
         feat["EMG1_SNR"] = float(rms1 / mav1) if mav1 > EPS else 0.0
         feat.update(extract_emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp, fs))
     else:
-        for k in ["MAV", "RMS", "VAR", "WL", "ZC", "SSC", "WAMP", "IEMG",
+        for k in ["MAV", "RMS", "WL", "ZC", "SSC", "WAMP",
                    "P2P", "AMP_CV",
                    "MNF", "MDF", "PKF", "PSR",
                    "POW_20_60", "POW_60_150", "POW_150_450", "POW_LH_RATIO",
                    "SE95",
-                   "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_FINE_BAND_KEYS + _EMG_BAND_RATIO_KEYS + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
+                   "SampEn", "SKEWNESS", "KURTOSIS", "SNR"] + _EMG_QUALITY_KEYS + _EMG_FINE_BAND_KEYS + _EMG_BAND_RATIO_KEYS + _EMG_ANTI_SPOOF_KEYS + _EMG_LEAK_KEYS + _EMG_CLEAN_NOISE_KEYS + _EMG_SUBWIN_KEYS + _EMG_SPEC_SHAPE_KEYS:
             feat[f"EMG1_{k}"] = 0.0
         feat["EMG_CROSS_CORR"] = 0.0
         feat["EMG_RMS_RATIO"] = 0.0

@@ -262,6 +262,7 @@ def build_pipeline_commands(args):
         's06_eval': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec}',
         's06_xpt': f'"{PYTHON}" "{_script_path("s06_deploy_eval")}" --artifact_dir "{args.artifact_dir}" --split {_arg(args, "split", "test")} --n_workers {args.n_workers} --window_sec {args.window_sec} --stride_sec {args.stride_sec} --export_deploy',
         's06_feat': '__extractor__',
+        's06_xgb': '__xgboost_json__',
         's06_plot': '__plot__',
         's06_cb': '__cookbook__',
     }
@@ -270,20 +271,21 @@ def build_pipeline_commands(args):
 def _step_list():
     """Return all known pipeline steps (key, display_name, default_enabled)."""
     return [
-        ("s01",   "数据扫描 & 切分",             True),
-        ("s02",   "Stage1 阈值筛选",              True),
-        ("s03",   "特征池提取",                   True),
-        ("s04",   "稳定性特征筛选",               True),
-        ("s05",   "XGBoost模型训练",              True),
-        ("s06_opt","状态机参数优化",              False),
-        ("s06_cache_train", "导出train NPZ缓存",  False),
-        ("s06_cache_valid", "导出valid NPZ缓存",  False),
-        ("s07_post", "FP敏感后处理搜参",          False),
-        ("s06_eval","端到端评估(test)",           True),
-        ("s06_xpt","导出部署产物",                True),
-        ("s06_feat","导出特征提取脚本",           True),
-        ("s06_plot","画错误样本图",               True),
-        ("s06_cb", "导出部署配方",                True),
+        ("s01", "data split", True),
+        ("s02", "stage1 threshold", True),
+        ("s03", "feature pool extraction", True),
+        ("s04", "feature selection", True),
+        ("s05", "xgboost training", True),
+        ("s06_feat", "export feature extractor", True),
+        ("s06_xgb", "export xgboost json", True),
+        ("s06_opt", "state-machine optimization", False),
+        ("s06_cache_train", "export train NPZ cache", False),
+        ("s06_cache_valid", "export valid NPZ cache", False),
+        ("s07_post", "postprocess search", False),
+        ("s06_eval", "end-to-end eval(test)", True),
+        ("s06_xpt", "export deploy package", True),
+        ("s06_plot", "plot error samples", True),
+        ("s06_cb", "export deploy cookbook", True),
     ]
 
 # backward compat: old test code references default_pipeline_steps
@@ -411,14 +413,15 @@ def _build_feature_code_map():
         # EMG ch0
         "EMG0_MAV": "float(np.mean(emg0_env)) if emg0_env is not None else 0.0",
         "EMG0_RMS": "float(np.sqrt(np.mean(emg0_bp**2))) if emg0_bp is not None else 0.0",
-        "EMG0_VAR": "float(np.var(emg0_bp)) if emg0_bp is not None else 0.0",
         "EMG0_WL": "float(np.sum(np.abs(np.diff(emg0_bp)))) if emg0_bp is not None else 0.0",
         "EMG0_ZC": "float(np.sum(np.abs(np.diff(np.sign(emg0_bp))))/(2.0*len(emg0_bp))) if emg0_bp is not None else 0.0",
         "EMG0_SSC": "float(np.sum((np.diff(emg0_bp)[:-1]*np.diff(emg0_bp)[1:])<0)/len(emg0_bp)) if emg0_bp is not None and len(emg0_bp)>=3 else 0.0",
         "EMG0_WAMP": "float(np.sum(np.abs(np.diff(emg0_bp))>0.05*max(np.max(np.abs(emg0_bp)),EPS))/len(emg0_bp)) if emg0_bp is not None else 0.0",
-        "EMG0_IEMG": "float(np.sum(emg0_env)) if emg0_env is not None else 0.0",
         "EMG0_P2P": "float(np.percentile(emg0_env,95)-np.percentile(emg0_env,5)) if emg0_env is not None else 0.0",
         "EMG0_AMP_CV": "float(np.std(emg0_env)/(np.mean(emg0_env)+EPS)) if emg0_env is not None else 0.0",
+        "EMG0_SAT_FRAC": "emg0_quality[0]",
+        "EMG0_CLIP_RATE": "emg0_quality[1]",
+        "EMG0_FLATLINE_FRAC": "emg0_quality[2]",
         "EMG0_MNF": "emg0_freq[0]", "EMG0_MDF": "emg0_freq[1]",
         "EMG0_PKF": "emg0_freq[2]", "EMG0_PSR": "emg0_freq[3]",
         "EMG0_POW_20_60": "emg0_freq[4]", "EMG0_POW_60_150": "emg0_freq[5]",
@@ -439,6 +442,9 @@ def _build_feature_code_map():
         "EMG0_RMS_SUBWIN_CV": "emg0_subwin[0]",
         "EMG0_MDF_SUBWIN_IQR": "emg0_subwin[1]",
         "EMG0_WL_SUBWIN_CV": "emg0_subwin[2]",
+        "EMG0_MNF_SUBWIN_CV": "emg0_subwin[3]",
+        "EMG0_PKF_SUBWIN_IQR": "emg0_subwin[4]",
+        "EMG0_SPEC_ENTROPY_SUBWIN_CV": "emg0_subwin[5]",
         "EMG0_SPEC_ENTROPY": "emg0_spec_shape[0]",
         "EMG0_SPEC_FLATNESS": "emg0_spec_shape[1]",
         "EMG0_SPEC_CENTROID": "emg0_spec_shape[2]",
@@ -450,14 +456,15 @@ def _build_feature_code_map():
         # EMG ch1
         "EMG1_MAV": "float(np.mean(emg1_env)) if emg1_env is not None else 0.0",
         "EMG1_RMS": "float(np.sqrt(np.mean(emg1_bp**2))) if emg1_bp is not None else 0.0",
-        "EMG1_VAR": "float(np.var(emg1_bp)) if emg1_bp is not None else 0.0",
         "EMG1_WL": "float(np.sum(np.abs(np.diff(emg1_bp)))) if emg1_bp is not None else 0.0",
         "EMG1_ZC": "float(np.sum(np.abs(np.diff(np.sign(emg1_bp))))/(2.0*len(emg1_bp))) if emg1_bp is not None else 0.0",
         "EMG1_SSC": "float(np.sum((np.diff(emg1_bp)[:-1]*np.diff(emg1_bp)[1:])<0)/len(emg1_bp)) if emg1_bp is not None and len(emg1_bp)>=3 else 0.0",
         "EMG1_WAMP": "float(np.sum(np.abs(np.diff(emg1_bp))>0.05*max(np.max(np.abs(emg1_bp)),EPS))/len(emg1_bp)) if emg1_bp is not None else 0.0",
-        "EMG1_IEMG": "float(np.sum(emg1_env)) if emg1_env is not None else 0.0",
         "EMG1_P2P": "float(np.percentile(emg1_env,95)-np.percentile(emg1_env,5)) if emg1_env is not None else 0.0",
         "EMG1_AMP_CV": "float(np.std(emg1_env)/(np.mean(emg1_env)+EPS)) if emg1_env is not None else 0.0",
+        "EMG1_SAT_FRAC": "emg1_quality[0]",
+        "EMG1_CLIP_RATE": "emg1_quality[1]",
+        "EMG1_FLATLINE_FRAC": "emg1_quality[2]",
         "EMG1_MNF": "emg1_freq[0]", "EMG1_MDF": "emg1_freq[1]",
         "EMG1_PKF": "emg1_freq[2]", "EMG1_PSR": "emg1_freq[3]",
         "EMG1_POW_20_60": "emg1_freq[4]", "EMG1_POW_60_150": "emg1_freq[5]",
@@ -478,6 +485,9 @@ def _build_feature_code_map():
         "EMG1_RMS_SUBWIN_CV": "emg1_subwin[0]",
         "EMG1_MDF_SUBWIN_IQR": "emg1_subwin[1]",
         "EMG1_WL_SUBWIN_CV": "emg1_subwin[2]",
+        "EMG1_MNF_SUBWIN_CV": "emg1_subwin[3]",
+        "EMG1_PKF_SUBWIN_IQR": "emg1_subwin[4]",
+        "EMG1_SPEC_ENTROPY_SUBWIN_CV": "emg1_subwin[5]",
         "EMG1_SPEC_ENTROPY": "emg1_spec_shape[0]",
         "EMG1_SPEC_FLATNESS": "emg1_spec_shape[1]",
         "EMG1_SPEC_CENTROID": "emg1_spec_shape[2]",
@@ -492,6 +502,8 @@ def _build_feature_code_map():
         "EMG_ENV_CORR": "emg_channel_balance[0]",
         "EMG_MAV_RATIO": "emg_channel_balance[1]",
         "EMG_CONTACT_IMBALANCE": "emg_channel_balance[2]",
+        "EMG_RMS_RATIO_SUBWIN_CV": "emg_channel_balance[3]",
+        "EMG_ENV_LAG_SEC": "emg_channel_balance[4]",
         # ACC (gravity/motion separated)
         "ACC_GRAV_MAG_MEAN": "float(np.mean(grav_mag))",
         "ACC_GRAV_DOM_RATIO": "float(np.max(np.abs(gm))/(np.sum(np.abs(gm))+1e-8))",
@@ -514,18 +526,16 @@ def _build_feature_code_map():
         "SIG_LEN": "float(len(ppg))",
         "SIG_SEC": "float(len(ppg)/fs)",
         # EMG 50Hz mains (on bp_leak_ref, before any notch)
-        "EMG0_PWR_50HZ": "float(np.log1p(_band_power(emg0_leak_ref, 49.5, 50.5, fs_emg))) if emg0_leak_ref is not None else 0.0",
         "EMG0_50HZ_RATIO": "(_band_power(emg0_leak_ref, 49.5, 50.5, fs_emg) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
+        "EMG0_50HZ_NARROW_RATIO": "(_band_power(emg0_leak_ref, 49.8, 50.2, fs_emg) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
         "EMG0_50HZ_HARM_RATIO": "((_band_power(emg0_leak_ref, 49.5, 50.5, fs_emg)+_band_power(emg0_leak_ref, 149.5, 150.5, fs_emg)+_band_power(emg0_leak_ref, 249.5, 250.5, fs_emg)) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
         "EMG0_40_60HZ_RATIO": "(_band_power(emg0_leak_ref, 40, 60, fs_emg) / (_band_power(emg0_leak_ref, 2, 450, fs_emg) + EPS)) if emg0_leak_ref is not None else 0.0",
-        "EMG1_PWR_50HZ": "float(np.log1p(_band_power(emg1_leak_ref, 49.5, 50.5, fs_emg))) if emg1_leak_ref is not None else 0.0",
         "EMG1_50HZ_RATIO": "(_band_power(emg1_leak_ref, 49.5, 50.5, fs_emg) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
+        "EMG1_50HZ_NARROW_RATIO": "(_band_power(emg1_leak_ref, 49.8, 50.2, fs_emg) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
         "EMG1_50HZ_HARM_RATIO": "((_band_power(emg1_leak_ref, 49.5, 50.5, fs_emg)+_band_power(emg1_leak_ref, 149.5, 150.5, fs_emg)+_band_power(emg1_leak_ref, 249.5, 250.5, fs_emg)) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
         "EMG1_40_60HZ_RATIO": "(_band_power(emg1_leak_ref, 40, 60, fs_emg) / (_band_power(emg1_leak_ref, 2, 450, fs_emg) + EPS)) if emg1_leak_ref is not None else 0.0",
         # EMG baseline drift
-        "EMG0_BASELINE_DRIFT_POW": "float(np.log1p(float(np.mean(_bandpass(emg0_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)))) if emg0_raw_ref is not None else 0.0",
         "EMG0_DRIFT_HF_RATIO": "(float(np.mean(_bandpass(emg0_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)) / (float(np.mean(emg0_leak_ref**2)) + EPS)) if emg0_raw_ref is not None and emg0_leak_ref is not None else 0.0",
-        "EMG1_BASELINE_DRIFT_POW": "float(np.log1p(float(np.mean(_bandpass(emg1_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)))) if emg1_raw_ref is not None else 0.0",
         "EMG1_DRIFT_HF_RATIO": "(float(np.mean(_bandpass(emg1_raw_ref, fs_emg, 1.0, 10.0, order=2)**2)) / (float(np.mean(emg1_leak_ref**2)) + EPS)) if emg1_raw_ref is not None and emg1_leak_ref is not None else 0.0",
         # EMG narrowband leakage features (on bp_leak_ref, before any notch)
         "EMG0_LEAK_100_RATIO": "emg0_leak[0] if emg0_leak_ref is not None else 0.0",
@@ -535,7 +545,11 @@ def _build_feature_code_map():
         "EMG0_LEAK_300_RATIO": "emg0_leak[4] if emg0_leak_ref is not None else 0.0",
         "EMG0_LEAK_SUM_RATIO": "float(np.sum(emg0_leak)) if emg0_leak_ref is not None else 0.0",
         "EMG0_LEAK_MAX_RATIO": "float(np.max(emg0_leak)) if emg0_leak_ref is not None else 0.0",
-        "EMG0_LEAK_MAX_FREQ": "float([100,150,200,250,300][int(np.argmax(emg0_leak))]) if emg0_leak_ref is not None else 0.0",
+        "EMG0_CLEAN_105_145_RATIO": "emg0_clean_noise[0]",
+        "EMG0_CLEAN_155_195_RATIO": "emg0_clean_noise[1]",
+        "EMG0_CLEAN_205_245_RATIO": "emg0_clean_noise[2]",
+        "EMG0_CLEAN_255_295_RATIO": "emg0_clean_noise[3]",
+        "EMG0_CLEAN_TO_NOISE_RATIO": "emg0_clean_noise[4]",
         "EMG1_LEAK_100_RATIO": "emg1_leak[0] if emg1_leak_ref is not None else 0.0",
         "EMG1_LEAK_150_RATIO": "emg1_leak[1] if emg1_leak_ref is not None else 0.0",
         "EMG1_LEAK_200_RATIO": "emg1_leak[2] if emg1_leak_ref is not None else 0.0",
@@ -543,7 +557,11 @@ def _build_feature_code_map():
         "EMG1_LEAK_300_RATIO": "emg1_leak[4] if emg1_leak_ref is not None else 0.0",
         "EMG1_LEAK_SUM_RATIO": "float(np.sum(emg1_leak)) if emg1_leak_ref is not None else 0.0",
         "EMG1_LEAK_MAX_RATIO": "float(np.max(emg1_leak)) if emg1_leak_ref is not None else 0.0",
-        "EMG1_LEAK_MAX_FREQ": "float([100,150,200,250,300][int(np.argmax(emg1_leak))]) if emg1_leak_ref is not None else 0.0",
+        "EMG1_CLEAN_105_145_RATIO": "emg1_clean_noise[0]",
+        "EMG1_CLEAN_155_195_RATIO": "emg1_clean_noise[1]",
+        "EMG1_CLEAN_205_245_RATIO": "emg1_clean_noise[2]",
+        "EMG1_CLEAN_255_295_RATIO": "emg1_clean_noise[3]",
+        "EMG1_CLEAN_TO_NOISE_RATIO": "emg1_clean_noise[4]",
         # ACC tremor
         "ACC_TREMOR_POW_8_12": "acc_tremor[0]",
         "ACC_TREMOR_RATIO": "acc_tremor[1]",
@@ -875,28 +893,42 @@ def _emg_frequency_features(bp, fs=1000):
 
 def _emg_subwindow_features(bp, env, fs=1000):
     if bp is None or len(bp) < int(fs):
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     x = np.asarray(bp, dtype=np.float64)
     win = max(16, int(round(fs)))
     rms_vals = []
     wl_vals = []
     mdf_vals = []
+    mnf_vals = []
+    pkf_vals = []
+    spec_entropy_vals = []
     for start in range(0, len(x) - win + 1, win):
         seg = x[start:start + win]
         if len(seg) < win:
             continue
         rms_vals.append(float(np.sqrt(np.mean(seg * seg))))
         wl_vals.append(float(np.sum(np.abs(np.diff(seg)))))
-        mdf_vals.append(float(_emg_frequency_features(seg, fs)[1]))
+        freq = _emg_frequency_features(seg, fs)
+        spec = _emg_spectral_shape_features(seg, fs)
+        mnf_vals.append(float(freq[0]))
+        mdf_vals.append(float(freq[1]))
+        pkf_vals.append(float(freq[2]))
+        spec_entropy_vals.append(float(spec[0]))
     if len(rms_vals) < 2:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     rms_arr = np.asarray(rms_vals, dtype=np.float64)
     wl_arr = np.asarray(wl_vals, dtype=np.float64)
     mdf_arr = np.asarray(mdf_vals, dtype=np.float64)
+    mnf_arr = np.asarray(mnf_vals, dtype=np.float64)
+    pkf_arr = np.asarray(pkf_vals, dtype=np.float64)
+    spec_entropy_arr = np.asarray(spec_entropy_vals, dtype=np.float64)
     return (
         float(np.std(rms_arr) / (np.mean(rms_arr) + EPS)),
         _robust_iqr(mdf_arr),
         float(np.std(wl_arr) / (np.mean(wl_arr) + EPS)),
+        float(np.std(mnf_arr) / (np.mean(mnf_arr) + EPS)),
+        _robust_iqr(pkf_arr),
+        float(np.std(spec_entropy_arr) / (np.mean(spec_entropy_arr) + EPS)),
     )
 
 def _emg_spectral_shape_features(bp, fs=1000):
@@ -926,13 +958,31 @@ def _emg_spectral_shape_features(bp, fs=1000):
     rolloff = float(bf[min(roll_idx, len(bf) - 1)])
     return entropy, flatness, centroid, rolloff
 
-def _emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp):
-    if ch0_env is None or ch1_env is None or ch0_bp is None or ch1_bp is None:
+def _emg_quality_features(bp, env):
+    if bp is None or env is None:
         return 0.0, 0.0, 0.0
+    bp = np.asarray(bp, dtype=np.float64)
+    env = np.asarray(env, dtype=np.float64)
+    n = min(len(bp), len(env))
+    if n < 4:
+        return 0.0, 0.0, 0.0
+    bp = bp[:n]
+    env = env[:n]
+    peak = float(np.max(np.abs(bp))) + EPS
+    sat_frac = float(np.mean(np.abs(bp) >= 0.98 * peak))
+    clip_rate = float(np.mean(np.abs(np.diff(bp)) < 1e-10)) if n > 1 else 0.0
+    scale = float(np.percentile(env, 95)) + EPS
+    flat_thr = max(scale * 1e-4, 1e-10)
+    flatline_frac = float(np.mean(np.abs(np.diff(bp)) <= flat_thr)) if n > 1 else 0.0
+    return sat_frac, clip_rate, flatline_frac
+
+def _emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp, fs=1000):
+    if ch0_env is None or ch1_env is None or ch0_bp is None or ch1_bp is None:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
     n_env = min(len(ch0_env), len(ch1_env))
     n_bp = min(len(ch0_bp), len(ch1_bp))
     if n_env < 4 or n_bp < 4:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
     env0 = np.asarray(ch0_env[:n_env], dtype=np.float64)
     env1 = np.asarray(ch1_env[:n_env], dtype=np.float64)
     mav0 = float(np.mean(env0))
@@ -940,7 +990,32 @@ def _emg_channel_balance_features(ch0_env, ch1_env, ch0_bp, ch1_bp):
     env_corr = _safe_corr(env0, env1, winsorize=True)
     mav_ratio = float(np.clip(_safe_div(mav0, mav1), 0.0, 1000.0)) if mav1 > EPS else 0.0
     imbalance = float(abs(mav0 - mav1) / (mav0 + mav1 + EPS))
-    return env_corr, mav_ratio, imbalance
+    bp0 = np.asarray(ch0_bp[:n_bp], dtype=np.float64)
+    bp1 = np.asarray(ch1_bp[:n_bp], dtype=np.float64)
+    win = max(16, int(round(fs)))
+    ratios = []
+    for start in range(0, n_bp - win + 1, win):
+        seg0 = bp0[start:start + win]
+        seg1 = bp1[start:start + win]
+        if len(seg0) < win or len(seg1) < win:
+            continue
+        rms0 = float(np.sqrt(np.mean(seg0 * seg0)))
+        rms1 = float(np.sqrt(np.mean(seg1 * seg1)))
+        ratios.append(float(np.clip(rms0 / (rms1 + EPS), 0.0, 1000.0)) if rms1 > EPS else 0.0)
+    if len(ratios) >= 2:
+        ratio_arr = np.asarray(ratios, dtype=np.float64)
+        ratio_cv = float(np.std(ratio_arr) / (np.mean(np.abs(ratio_arr)) + EPS))
+    else:
+        ratio_cv = 0.0
+    env0_z = env0 - np.mean(env0)
+    env1_z = env1 - np.mean(env1)
+    if np.std(env0_z) > EPS and np.std(env1_z) > EPS:
+        corr = np.correlate(env0_z, env1_z, mode="full")
+        lag = int(np.argmax(np.abs(corr)) - (len(env1_z) - 1))
+        lag_sec = float(lag / fs)
+    else:
+        lag_sec = 0.0
+    return env_corr, mav_ratio, imbalance, ratio_cv, lag_sec
 
 def _resample_poly(data, up, down):
     from scipy.signal import resample_poly as _rp
@@ -1044,6 +1119,33 @@ def _compute_leak_ratios(bp_ref, fs, leak_freqs, bw_hz=0.8):
         mask = (f >= f0 - bw_hz) & (f <= f0 + bw_hz)
         p_band = float(np.sum(Pxx[mask]))
         ratios.append(p_band / total_pow)
+    return tuple(ratios)
+
+
+def _compute_clean_noise_ratios(bp_ref, fs):
+    if bp_ref is None or len(bp_ref) < 16:
+        return (0.0,) * 5
+    x = np.asarray(bp_ref, dtype=np.float64)
+    try:
+        from scipy.signal import welch
+        nperseg = min(512, len(x) // 2)
+        if nperseg < 16:
+            return (0.0,) * 5
+        noverlap = nperseg // 2
+        f, Pxx = welch(x, fs=fs, nperseg=nperseg, noverlap=noverlap)
+    except Exception:
+        return (0.0,) * 5
+
+    def _band_sum(lo, hi):
+        mask = (f >= lo) & (f <= hi)
+        return float(np.sum(Pxx[mask])) if np.any(mask) else 0.0
+
+    noise_bands = ((49.8, 50.2), (99.2, 100.8), (149.2, 150.8), (199.2, 200.8), (249.2, 250.8))
+    clean_bands = ((105.0, 145.0), (155.0, 195.0), (205.0, 245.0), (255.0, 295.0))
+    noise_pow = sum(_band_sum(lo, hi) for lo, hi in noise_bands)
+    clean_vals = [_band_sum(lo, hi) for lo, hi in clean_bands]
+    ratios = [float(v / (noise_pow + EPS)) for v in clean_vals]
+    ratios.append(float(sum(clean_vals) / (noise_pow + EPS)))
     return tuple(ratios)
 
 
@@ -1288,13 +1390,17 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         # leak ratio array per channel
         emg0_leak = _compute_leak_ratios(emg0_leak_ref, fs_emg, EMG_LEAK_FREQS) if emg0_leak_ref is not None else (0,)*5
         emg1_leak = _compute_leak_ratios(emg1_leak_ref, fs_emg, EMG_LEAK_FREQS) if emg1_leak_ref is not None else (0,)*5
+        emg0_clean_noise = _compute_clean_noise_ratios(emg0_leak_ref, fs_emg) if emg0_leak_ref is not None else (0.0,) * 5
+        emg1_clean_noise = _compute_clean_noise_ratios(emg1_leak_ref, fs_emg) if emg1_leak_ref is not None else (0.0,) * 5
+        emg0_quality = _emg_quality_features(emg0_bp, emg0_env)
+        emg1_quality = _emg_quality_features(emg1_bp, emg1_env) if emg1_bp is not None else (0.0, 0.0, 0.0)
         emg0_freq = _emg_frequency_features(emg0_bp, fs_emg)
         emg1_freq = _emg_frequency_features(emg1_bp, fs_emg) if emg1_bp is not None else (0,) * 21
         emg0_subwin = _emg_subwindow_features(emg0_bp, emg0_env, fs_emg)
-        emg1_subwin = _emg_subwindow_features(emg1_bp, emg1_env, fs_emg) if emg1_bp is not None else (0.0, 0.0, 0.0)
+        emg1_subwin = _emg_subwindow_features(emg1_bp, emg1_env, fs_emg) if emg1_bp is not None else (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         emg0_spec_shape = _emg_spectral_shape_features(emg0_bp, fs_emg)
         emg1_spec_shape = _emg_spectral_shape_features(emg1_bp, fs_emg) if emg1_bp is not None else (0.0, 0.0, 0.0, 0.0)
-        emg_channel_balance = _emg_channel_balance_features(emg0_env, emg1_env, emg0_bp, emg1_bp)
+        emg_channel_balance = _emg_channel_balance_features(emg0_env, emg1_env, emg0_bp, emg1_bp, fs_emg)
         if emg0_env is not None:
             emg0_env_ds = _resample_poly(emg0_env, fs, fs_emg)
             emg0_env_smooth = _smooth_envelope(emg0_env, fs_emg)
@@ -1305,10 +1411,12 @@ def extract_features(ppg, emg=None, acc=None, fs=100, fs_emg=1000):
         emg0_leak_ref = emg0_bp = emg0_env = emg0_raw_ref = None
         emg1_leak_ref = emg1_bp = emg1_env = emg1_raw_ref = None
         emg0_leak = emg1_leak = (0,) * 5
+        emg0_clean_noise = emg1_clean_noise = (0.0,) * 5
+        emg0_quality = emg1_quality = (0.0, 0.0, 0.0)
         emg0_freq = emg1_freq = (0,) * 21
-        emg0_subwin = emg1_subwin = (0.0, 0.0, 0.0)
+        emg0_subwin = emg1_subwin = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         emg0_spec_shape = emg1_spec_shape = (0.0, 0.0, 0.0, 0.0)
-        emg_channel_balance = (0.0, 0.0, 0.0)
+        emg_channel_balance = (0.0, 0.0, 0.0, 0.0, 0.0)
         emg0_env_ds = emg0_env_smooth_ds = None
 
     # ---- ACC (gravity/motion separation) ----
@@ -1526,16 +1634,31 @@ def export_deploy_cookbook(artifact_dir):
         json.dump(cookbook, f, indent=2, ensure_ascii=False)
     print(f"[OK] deploy_cookbook.json -> {out_path}")
 
+    export_deploy_xgboost_json(artifact_dir, bundle=bundle)
+
+
+def export_deploy_xgboost_json(artifact_dir, bundle=None):
+    """Export deploy_xgboost.json as soon as model_bundle.pkl exists."""
+    bundle_path = os.path.join(artifact_dir, "model_bundle.pkl")
+    if bundle is None:
+        if not os.path.exists(bundle_path):
+            print("[WARN] model_bundle.pkl not found, skip deploy_xgboost.json")
+            return
+        bundle = joblib.load(bundle_path)
+
+    selected = bundle["feature_names"]
+    model = bundle["model"]
+    booster = model.get_booster()
     xgb_path = os.path.join(artifact_dir, "deploy_xgboost.json")
     with open(xgb_path, "w", encoding="utf-8") as f:
         json.dump({
             "feature_names": selected,
             "feature_order": selected,
-            "fill_values": fill_values,
-            "clip_bounds": clip_bounds,
+            "fill_values": bundle["fill_values"],
+            "clip_bounds": bundle.get("clip_bounds", {}),
             "preprocess_order": ["select feature_order", "fill NaN/inf with fill_values", "clip by clip_bounds"],
-            "n_estimators": n_estimators,
-            "threshold": threshold,
+            "n_estimators": int(model.n_estimators),
+            "threshold": float(bundle["threshold"]),
             "model": json.loads(booster.save_config()),
         }, f, indent=2, ensure_ascii=False)
     print(f"[OK] deploy_xgboost.json -> {xgb_path}")
@@ -1840,6 +1963,15 @@ def main():
             print(f'[OK] {display_name}  [{timedelta(seconds=int(dt))}]')
             if key == stop_after:
                 print(f'\n[STOP] 已运行到 {stop_after}，按 --stop_after 提前结束')
+                break
+            continue
+        if command == '__xgboost_json__':
+            t0 = time.time()
+            export_deploy_xgboost_json(args.artifact_dir)
+            dt = time.time() - t0
+            print(f'[OK] {display_name}  [{timedelta(seconds=int(dt))}]')
+            if key == stop_after:
+                print(f'\n[STOP] reached {stop_after}; stopped by --stop_after')
                 break
             continue
         if command == '__cookbook__':

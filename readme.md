@@ -24,17 +24,18 @@ s02 Stage1 PPG DC/ACDC 工程阈值配置
 s03 PPG/EMG/ACC 特征池提取
 s04 特征清洗、相关性/VIF/稳定性筛选
 s05 XGBoost 训练、train 内部 group CV 搜参、valid 窗口阈值固化
+s08 立即导出独立特征提取脚本和 XGBoost 部署 JSON
 s06 导出 train/valid 逐窗 NPZ 缓存
 s07 基于 train+valid hard samples 做后处理状态机和阈值 offset 联合搜参
 s06 在 test 上做最终端到端评估
 s06 导出部署包
-s08 导出独立特征提取脚本、错误样本图、部署 cookbook
+s08 导出错误样本图、部署 cookbook
 ```
 
 对应的 `s08` 内部步骤键名：
 
 ```text
-s01 -> s02 -> s03 -> s04 -> s05 -> s06_cache_train -> s06_cache_valid -> s07_post -> s06_eval -> s06_xpt -> s06_feat -> s06_plot -> s06_cb
+s01 -> s02 -> s03 -> s04 -> s05 -> s06_feat -> s06_xgb -> s06_cache_train -> s06_cache_valid -> s07_post -> s06_eval -> s06_xpt -> s06_plot -> s06_cb
 ```
 
 `--with_postprocess` 等效于：
@@ -210,7 +211,7 @@ DC > dc_threshold AND AC_DC_RATIO < ac_dc_threshold
 默认部署阈值：
 
 ```text
-dc_threshold = 0.2e6
+dc_threshold = 0.0
 ac_dc_threshold = 1.0
 ```
 

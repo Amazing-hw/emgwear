@@ -20,6 +20,24 @@ def test_leak_ratio_detects_100hz_crosstalk():
     assert feat["EMG0_LEAK_100_RATIO"] > 0.1
 
 
+def test_clean_band_to_noise_ratios_detect_interband_energy():
+    from s03_extract_feature_pool import extract_emg_leakage_features, preprocess_emg_signal_with_raw
+
+    rng = np.random.default_rng(11)
+    n = 3000
+    t = np.arange(n) / 1000.0
+    emg_clean = rng.normal(0, 0.5, size=n) + 20.0 * np.sin(2 * np.pi * 120.0 * t)
+    emg_noisy = rng.normal(0, 0.5, size=n) + 20.0 * np.sin(2 * np.pi * 100.0 * t)
+
+    clean_ref, _, _, _ = preprocess_emg_signal_with_raw(emg_clean)
+    noisy_ref, _, _, _ = preprocess_emg_signal_with_raw(emg_noisy)
+    clean_feat = extract_emg_leakage_features(clean_ref, fs=1000.0, prefix="EMG0")
+    noisy_feat = extract_emg_leakage_features(noisy_ref, fs=1000.0, prefix="EMG0")
+
+    assert clean_feat["EMG0_CLEAN_105_145_RATIO"] > noisy_feat["EMG0_CLEAN_105_145_RATIO"] * 5
+    assert clean_feat["EMG0_CLEAN_TO_NOISE_RATIO"] > noisy_feat["EMG0_CLEAN_TO_NOISE_RATIO"] * 5
+
+
 def test_leak_ratio_low_for_clean_signal():
     from s03_extract_feature_pool import extract_emg_leakage_features, preprocess_emg_signal_with_raw
 
@@ -73,8 +91,9 @@ def test_mains_features_on_leak_ref():
     feat_quiet = extract_emg_mains_features(bp_leak_quiet, fs=1000.0, prefix="TEST")
     feat_loud = extract_emg_mains_features(bp_leak_loud, fs=1000.0, prefix="TEST")
 
-    assert feat_loud["TEST_PWR_50HZ"] > feat_quiet["TEST_PWR_50HZ"]
+    assert "TEST_PWR_50HZ" not in feat_loud
     assert feat_loud["TEST_50HZ_RATIO"] > feat_quiet["TEST_50HZ_RATIO"] * 5
+    assert feat_loud["TEST_50HZ_NARROW_RATIO"] > feat_quiet["TEST_50HZ_NARROW_RATIO"] * 5
     assert feat_loud["TEST_40_60HZ_RATIO"] > feat_quiet["TEST_40_60HZ_RATIO"] * 5
 
 
@@ -88,7 +107,9 @@ def test_emg_missing_all_leak_and_mains_features_zero():
         assert feat[f"EMG{ch}_LEAK_150_RATIO"] == 0.0
         assert feat[f"EMG{ch}_LEAK_SUM_RATIO"] == 0.0
         assert feat[f"EMG{ch}_LEAK_MAX_RATIO"] == 0.0
-        assert feat[f"EMG{ch}_LEAK_MAX_FREQ"] == 0.0
+        assert feat[f"EMG{ch}_50HZ_NARROW_RATIO"] == 0.0
+        assert feat[f"EMG{ch}_CLEAN_105_145_RATIO"] == 0.0
+        assert feat[f"EMG{ch}_CLEAN_TO_NOISE_RATIO"] == 0.0
         assert feat[f"EMG{ch}_40_60HZ_RATIO"] == 0.0
 
 
@@ -135,17 +156,19 @@ def test_leak_features_names_consistent():
     for ch in [0, 1]:
         for hz in [100, 150, 200, 250, 300]:
             expected_leak_keys.append(f"EMG{ch}_LEAK_{hz}_RATIO")
+        for lo, hi in [(105, 145), (155, 195), (205, 245), (255, 295)]:
+            expected_leak_keys.append(f"EMG{ch}_CLEAN_{lo}_{hi}_RATIO")
         expected_leak_keys.append(f"EMG{ch}_LEAK_SUM_RATIO")
         expected_leak_keys.append(f"EMG{ch}_LEAK_MAX_RATIO")
-        expected_leak_keys.append(f"EMG{ch}_LEAK_MAX_FREQ")
+        expected_leak_keys.append(f"EMG{ch}_CLEAN_TO_NOISE_RATIO")
 
     for key in expected_leak_keys:
         assert key in feat
         assert isinstance(feat[key], float)
 
 
-def test_leak_max_freq_is_valid():
-    from s03_extract_feature_pool import extract_emg_features, _EMG_LEAK_FREQS
+def test_leak_max_ratio_tracks_strongest_tone_without_max_freq_feature():
+    from s03_extract_feature_pool import extract_emg_features
 
     emg0 = _synthetic_emg_with_tone(tone_hz=200.0, tone_amp=80.0)
     emg1 = _synthetic_emg_with_tone(tone_hz=150.0, tone_amp=30.0)
@@ -153,8 +176,9 @@ def test_leak_max_freq_is_valid():
 
     feat = extract_emg_features(emg, fs=1000.0)
 
-    assert feat["EMG0_LEAK_MAX_FREQ"] in _EMG_LEAK_FREQS
+    assert "EMG0_LEAK_MAX_FREQ" not in feat
     assert feat["EMG0_LEAK_200_RATIO"] > feat["EMG0_LEAK_100_RATIO"]
+    assert feat["EMG0_LEAK_MAX_RATIO"] >= feat["EMG0_LEAK_200_RATIO"]
 
 
 def test_notch_config_constant_values():

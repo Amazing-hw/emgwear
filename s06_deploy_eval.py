@@ -1267,14 +1267,15 @@ def build_feature_formula_map(selected_features):
     EMG_TEMPLATES = OrderedDict([
         ("{ch}_MAV",   "mean(|emg_env|)"),
         ("{ch}_RMS",   "sqrt(mean(emg_bp²))"),
-        ("{ch}_VAR",   "var(emg_bp)"),
         ("{ch}_WL",    "sum(|diff(emg_bp)|)"),
         ("{ch}_ZC",    "zero-crossing rate of emg_bp"),
         ("{ch}_SSC",   "slope sign change rate"),
         ("{ch}_WAMP",  "fraction of |diff| > 0.05*max"),
-        ("{ch}_IEMG",  "sum(|emg_env|)"),
         ("{ch}_P2P",   "percentile(env,95) - percentile(env,5) — robust peak-to-peak"),
         ("{ch}_AMP_CV","std(env) / mean(env) — envelope variability"),
+        ("{ch}_SAT_FRAC", "mean(abs(emg_bp) >= 0.98 * max(abs(emg_bp)))"),
+        ("{ch}_CLIP_RATE", "fraction of near-zero adjacent differences in emg_bp"),
+        ("{ch}_FLATLINE_FRAC", "fraction of adjacent emg_bp differences below adaptive flatline threshold"),
         ("{ch}_MNF",   "mean frequency in 20-450Hz band"),
         ("{ch}_MDF",   "median frequency in 20-450Hz band"),
         ("{ch}_PKF",   "peak frequency in 20-450Hz band"),
@@ -1299,6 +1300,9 @@ def build_feature_formula_map(selected_features):
         ("{ch}_RMS_SUBWIN_CV", "std([RMS(each 1s subwindow)]) / mean([RMS(each 1s subwindow)])"),
         ("{ch}_MDF_SUBWIN_IQR", "IQR([MDF(each 1s subwindow)])"),
         ("{ch}_WL_SUBWIN_CV", "std([waveform_length(each 1s subwindow)]) / mean([waveform_length(each 1s subwindow)])"),
+        ("{ch}_MNF_SUBWIN_CV", "std([MNF(each 1s subwindow)]) / mean([MNF(each 1s subwindow)])"),
+        ("{ch}_PKF_SUBWIN_IQR", "IQR([PKF(each 1s subwindow)])"),
+        ("{ch}_SPEC_ENTROPY_SUBWIN_CV", "std([spectral entropy(each 1s subwindow)]) / mean([spectral entropy(each 1s subwindow)])"),
         ("{ch}_SPEC_ENTROPY", "normalized spectral entropy of Welch PSD in 20-450Hz band"),
         ("{ch}_SPEC_FLATNESS", "geometric_mean(PSD) / arithmetic_mean(PSD) in 20-450Hz band"),
         ("{ch}_SPEC_CENTROID", "sum(freq * PSD) / sum(PSD) in 20-450Hz band"),
@@ -1308,13 +1312,12 @@ def build_feature_formula_map(selected_features):
         ("{ch}_KURTOSIS","kurtosis of emg_bp amplitude distribution"),
         ("{ch}_SNR",   "RMS / (MAV + 1e-12) — signal-to-noise proxy"),
         # 50Hz 工频拾取（在 emg_bp_leak_ref 上算，highpass 后、bandstop/notch 前）
-        ("{ch}_PWR_50HZ",         "log1p(power(49.5-50.5Hz) of emg_bp_leak_ref)"),
         ("{ch}_50HZ_RATIO",       "power(49.5-50.5Hz) / power(2-450Hz) on emg_bp_leak_ref"),
+        ("{ch}_50HZ_NARROW_RATIO","power(49.8-50.2Hz) / power(2-450Hz) on emg_bp_leak_ref"),
         ("{ch}_40_60HZ_RATIO",    "power(40-60Hz) / power(2-450Hz) on emg_bp_leak_ref"),
         # 谐波 ratio 包含 50/150/250Hz（150/250Hz 可能含 PPG 串扰，由 LEAK_* 特征分离）
         ("{ch}_50HZ_HARM_RATIO",  "(P(49.5-50.5)+P(149.5-150.5)+P(249.5-250.5)) / P(2-450) on emg_bp_leak_ref"),
         # Baseline drift（在 emg_raw_ref 上算，1-10Hz 已被 emg_bp 砍掉）
-        ("{ch}_BASELINE_DRIFT_POW","log1p(mean(bandpass(emg_raw_ref, 1-10Hz, 2nd_order, fs=1000)²))"),
         ("{ch}_DRIFT_HF_RATIO",    "mean(lf²) / mean(emg_bp_leak_ref²) — 1-10Hz / 20-450Hz 能量比"),
         # PPG 窄带串扰显式特征（在 emg_bp_leak_ref 上算，bandstop/notch 前）
         ("{ch}_LEAK_100_RATIO", "power(99.2-100.8Hz) / power(20-450Hz) on emg_bp_leak_ref"),
@@ -1324,7 +1327,11 @@ def build_feature_formula_map(selected_features):
         ("{ch}_LEAK_300_RATIO", "power(299.2-300.8Hz) / power(20-450Hz) on emg_bp_leak_ref"),
         ("{ch}_LEAK_SUM_RATIO","sum of above 5 LEAK_*_RATIO frequency ratios"),
         ("{ch}_LEAK_MAX_RATIO","max of above 5 LEAK_*_RATIO frequency ratios"),
-        ("{ch}_LEAK_MAX_FREQ", "frequency (Hz) of the max LEAK_*_RATIO among 100/150/200/250/300"),
+        ("{ch}_CLEAN_105_145_RATIO", "power(105-145Hz) / sum known-noise narrowband power on emg_bp_leak_ref"),
+        ("{ch}_CLEAN_155_195_RATIO", "power(155-195Hz) / sum known-noise narrowband power on emg_bp_leak_ref"),
+        ("{ch}_CLEAN_205_245_RATIO", "power(205-245Hz) / sum known-noise narrowband power on emg_bp_leak_ref"),
+        ("{ch}_CLEAN_255_295_RATIO", "power(255-295Hz) / sum known-noise narrowband power on emg_bp_leak_ref"),
+        ("{ch}_CLEAN_TO_NOISE_RATIO", "sum clean inter-band power / sum known-noise narrowband power on emg_bp_leak_ref"),
     ])
 
     # ---- ACC features ----
@@ -1422,6 +1429,8 @@ def build_feature_formula_map(selected_features):
     ALL_TEMPLATES["EMG_ENV_CORR"] = "safe_corr(EMG0 envelope, EMG1 envelope)"
     ALL_TEMPLATES["EMG_MAV_RATIO"] = "EMG0_MAV / (EMG1_MAV + eps), clipped to [0,1000]"
     ALL_TEMPLATES["EMG_CONTACT_IMBALANCE"] = "abs(EMG0_MAV - EMG1_MAV) / (EMG0_MAV + EMG1_MAV + eps)"
+    ALL_TEMPLATES["EMG_RMS_RATIO_SUBWIN_CV"] = "std([EMG0_RMS_i / EMG1_RMS_i for 1s subwindows]) / mean(abs(ratios))"
+    ALL_TEMPLATES["EMG_ENV_LAG_SEC"] = "lag of max absolute cross-correlation between EMG0 and EMG1 envelopes, in seconds"
     emg_consensus_source = {
         "RMS": "sqrt(mean(emg_bp^2))",
         "MAV": "mean(abs(emg envelope))",

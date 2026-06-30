@@ -258,6 +258,10 @@ def test_default_pipeline_steps_skip_postprocess_search_before_final_eval():
     assert "s06_cache_valid" not in default_keys
     assert "s07_post" not in default_keys
     assert step_keys.index("s05") < step_keys.index("s06_eval")
+    assert step_keys.index("s05") < step_keys.index("s06_feat") < step_keys.index("s06_eval")
+    assert step_keys.index("s05") < step_keys.index("s06_xgb") < step_keys.index("s06_eval")
+    assert "s06_feat" in default_keys
+    assert "s06_xgb" in default_keys
 
 
 def test_dry_run_stop_after_stops_printing_later_steps():
@@ -273,9 +277,10 @@ def test_dry_run_stop_after_stops_printing_later_steps():
     )
 
     assert result.returncode == 0
-    assert "稳定性特征筛选" in result.stdout
-    assert "XGBoost模型训练" not in result.stdout
-    assert "[STOP] 已运行到 s04" in result.stdout
+    assert "feature selection" in result.stdout
+    assert "xgboost training" not in result.stdout
+    assert "[STOP]" in result.stdout
+    assert "s04" in result.stdout
 
 
 def test_deploy_feature_extractor_is_standalone_and_matches_training_ppg_features():
@@ -333,7 +338,7 @@ def test_deploy_feature_extractor_is_standalone_and_matches_training_ppg_feature
 
 
 def test_deploy_feature_extractor_template_keeps_emg_preprocess_to_filter_chain_only():
-    feature_order = ["EMG0_BASELINE_DRIFT_POW", "EMG0_DRIFT_HF_RATIO"]
+    feature_order = ["EMG0_DRIFT_HF_RATIO", "EMG1_DRIFT_HF_RATIO"]
     formula_map = s08._build_feature_code_map()
     feat_block = "\n".join(f'    f["{name}"] = {formula_map[name]}' for name in feature_order)
     script = s08._build_extractor_script_template(

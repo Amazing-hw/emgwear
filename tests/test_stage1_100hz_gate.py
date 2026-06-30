@@ -54,9 +54,9 @@ def test_stage1_threshold_artifact_uses_fixed_engineering_threshold():
     result = s02.build_fixed_stage1_threshold_artifact(df, df)
 
     assert result["threshold_search_enabled"] is False
-    assert result["dc_threshold"] == 0.2e6
+    assert result["dc_threshold"] == 0.0
     assert result["ac_dc_threshold"] == 1.0
-    assert result["deploy_stage1_threshold"]["dc_threshold"] == 0.2e6
+    assert result["deploy_stage1_threshold"]["dc_threshold"] == 0.0
     assert result["deploy_stage1_threshold"]["ac_dc_threshold"] == 1.0
     assert result["deploy_stage1_threshold"]["search_source"] == "fixed_engineering_threshold"
     assert result["deploy_stage1_threshold"]["fs"] == 100
@@ -97,13 +97,13 @@ def test_stage1_main_ignores_legacy_search_method(monkeypatch):
         s02.main([
             "--artifact_dir", str(artifact_dir),
             "--search_method", "grid",
-            "--fixed_dc_threshold", "200000",
         ])
 
         out = json.loads((artifact_dir / "stage1_threshold.json").read_text(encoding="utf-8"))
         assert out["threshold_search_enabled"] is False
         assert out["deploy_stage1_threshold"]["search_source"] == "fixed_engineering_threshold"
-        assert out["deploy_stage1_threshold"]["dc_threshold"] == 0.2e6
+        assert out["deploy_stage1_threshold"]["dc_threshold"] == 0.0
+        assert out["deploy_stage1_threshold"]["ac_dc_threshold"] == 1.0
     finally:
         shutil.rmtree(artifact_dir.parent, ignore_errors=True)
 
